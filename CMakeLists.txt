@@ -8,5 +8,6 @@ if (!WIN32)
     link_libraries(pthread rt m)
 endif (!WIN32)
 
-AUX_SOURCE_DIRECTORY(. src)
-ADD_EXECUTABLE(main ${src})
+# AUX_SOURCE_DIRECTORY(. src)
+file(GLOB SRC_FILES "*.cpp")
+ADD_EXECUTABLE(main ${SRC_FILES})
