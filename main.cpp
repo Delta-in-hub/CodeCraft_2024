@@ -7,8 +7,6 @@
 #include <queue>
 #include <vector>
 
-#define DEBUG
-
 class RobotAction {
 public:
   enum class ActionType : uint8_t {
