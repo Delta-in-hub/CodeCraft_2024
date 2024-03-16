@@ -8,6 +8,7 @@
 #include <cstring>
 #include <memory>
 #include <queue>
+#include <sys/types.h>
 #include <utility>
 #include <vector>
 
@@ -153,8 +154,8 @@ public:
   static void processConnectedBerth(uint32_t berth_id) {
     assert(berth_id < BERTH_MAX);
 
-    static bool visited[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
-    memset(visited, 0, sizeof(visited));
+    static bool inQueue[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
+    memset(inQueue, 0, sizeof(inQueue));
     // Berth 4*4
     for (uint32_t i = 0; i < 4; ++i) {
       for (uint32_t j = 0; j < 4; ++j) {
@@ -168,13 +169,13 @@ public:
     // bfs
     std::queue<std::pair<uint32_t, uint32_t>> q;
     q.push({berths[berth_id]._x, berths[berth_id]._y});
+    inQueue[berths[berth_id]._x][berths[berth_id]._y] = true;
+
     while (not q.empty()) {
       auto [nx, ny] = q.front();
       q.pop();
 
-      if (visited[nx][ny])
-        continue;
-      visited[nx][ny] = true;
+      assert(inQueue[nx][ny]);
 
       switch (_grids[nx][ny]._type) {
       case Type::space:
@@ -184,9 +185,11 @@ public:
         for (int i = 0; i < 4; i++) {
           uint32_t dx = nx + _sdir[i][0];
           uint32_t dy = ny + _sdir[i][1];
-          if (isMoveAble(dx, dy) and not visited[dx][dy]) {
-            _toBerth[dx][dy][berth_id] = reverse(static_cast<Direction>(i));
+          if (isMoveAble(dx, dy) and not inQueue[dx][dy]) {
+            _toBerth[dx][dy][berth_id] =
+                reverse(static_cast<Direction>(i)); //! Maybe bug here
             q.push({dx, dy});
+            inQueue[dx][dy] = true;
           }
         }
         break;
@@ -198,6 +201,91 @@ public:
     }
   }
 
+  static std::vector<Direction>
+  aStarSearch(const std::pair<uint32_t, uint32_t> from,
+              const std::pair<uint32_t, uint32_t> to) {
+
+    // Solving ERR: Reference to local variable declared in enclosing function
+    static const auto _from = from;
+    static const auto _to = to;
+
+    std::vector<Direction> pathd;
+    /*
+    对于任意一个格子n，其估价函数如下：
+    f(n) = g(n) + h(n)
+    其中 g(n) 指的是从起始格子到格子n的实际代价，
+    而 h(n) 指的是从格子n到终点格子的估计代价。
+    */
+
+    struct gridPqItem {
+      uint32_t _x, _y;
+      static int manhattanDistance(const std::pair<int, int> &a,
+                                   const std::pair<int, int> &b) {
+        return std::abs(a.first - b.first) + std::abs(a.second - b.second);
+      }
+
+      // For priority queue , the smaller one is in the front
+      bool operator<(const gridPqItem &rhs) const {
+        return this->operator>(rhs);
+      }
+
+      bool operator>(const gridPqItem &rhs) const {
+        const auto &lhs_grid = _grids[_x][_y];
+        const auto &rhs_grid = _grids[rhs._x][rhs._y];
+
+        const auto lhs_g = manhattanDistance(_from, {_x, _y});
+        const auto lhs_h = manhattanDistance({_x, _y}, _to);
+        const auto lhs_f = lhs_g + lhs_h;
+
+        const auto rhs_g = manhattanDistance(_from, {rhs._x, rhs._y});
+        const auto rhs_h = manhattanDistance({rhs._x, rhs._y}, _to);
+        const auto rhs_f = rhs_g + rhs_h;
+
+        if (lhs_f == rhs_f)
+          return lhs_h > rhs_h;
+        return lhs_f > rhs_f;
+      }
+    };
+
+    static bool inQueue[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
+    memset(inQueue, 0, sizeof(inQueue));
+
+    static Direction road[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
+    std::fill_n(road, MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX, Direction::none);
+
+    std::priority_queue<gridPqItem> pq;
+    pq.push({from.first, from.second});
+
+    inQueue[from.first][from.second] = true;
+
+    while (not pq.empty()) {
+      auto [x, y] = pq.top();
+      pq.pop();
+
+      assert(inQueue[x][y]);
+
+      if (x == to.first and y == to.second) {
+        while (x != from.first or y != from.second) {
+          pathd.push_back(reverse(road[x][y]));
+          x += _sdir[static_cast<int>(road[x][y])][0];
+          y += _sdir[static_cast<int>(road[x][y])][1];
+        }
+        break;
+      }
+
+      for (int i = 0; i < 4; i++) {
+        uint32_t nx = x + _sdir[i][0];
+        uint32_t ny = y + _sdir[i][1];
+        if (isMoveAble(nx, ny) and not inQueue[nx][ny]) {
+          road[nx][ny] = reverse(static_cast<Direction>(i)); //! Maybe bug here
+          pq.push({nx, ny});
+          inQueue[nx][ny] = true;
+        }
+      }
+    }
+    std::reverse(pathd.begin(), pathd.end());
+    return pathd;
+  }
 } map;
 
 char Map::_rawmap[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
@@ -240,6 +328,8 @@ public:
 };
 
 uint32_t Ship::capacity = -1;
+
+std::array<Ship, SHIP_MAX> ships;
 
 class Robot {
 public:
@@ -286,24 +376,43 @@ public:
   }
 };
 
+std::array<Robot, ROBOT_MAX> robots;
+
 class Cargo {
 public:
   uint32_t _id;
   uint32_t _x, _y;
   uint32_t _price; // 货物的价值
-  bool operator<(const Cargo &rhs) const { return _price < rhs._price; }
-  bool operator==(const Cargo &rhs) const {
-    return std::tie(_id, _x, _y, _price) ==
-           std::tie(rhs._id, rhs._x, rhs._y, rhs._price);
+};
+std::vector<Cargo> cargos;
+
+class CargoPqItem {
+public:
+  uint32_t _id;
+  CargoPqItem() = delete;
+  CargoPqItem(uint32_t id) : _id(id) {}
+  CargoPqItem(const Cargo &cargo) : _id(cargo._id) {}
+  CargoPqItem(const CargoPqItem &item) : _id(item._id) {}
+  bool operator<(const CargoPqItem &rhs) const {
+    assert(_id < cargos.size());
+    assert(rhs._id < cargos.size());
+
+    const auto &lhs = cargos[this->_id];
+    const auto &rhs_cargo = cargos[rhs._id];
+    const Map::Grid &lhs_grid = map._grids[lhs._x][lhs._y];
+    const Map::Grid &rhs_grid = map._grids[rhs_cargo._x][rhs_cargo._y];
+    const auto lc = lhs_grid._connected_berth.count();
+    const auto rc = rhs_grid._connected_berth.count();
+
+    if (lc == 0 or rc == 0)
+      return lc < rc;
+
+    // ! TBD Better
+    return std::tie(lhs._price, lc) < std::tie(rhs_cargo._price, rc);
   }
 };
 
-std::array<Robot, ROBOT_MAX> robots;
-
-std::array<Ship, SHIP_MAX> ships;
-
-// std::priority_queue<Cargo> pc;
-std::vector<Cargo> cargos;
+std::priority_queue<CargoPqItem> cargos_pq;
 
 void initialization() {
   cargos.reserve(10 * FRAME_MAX);
@@ -351,6 +460,7 @@ uint32_t frameInput() {
     // 货物的位置坐标、金额
     scanf("%u %u %u", &x, &y, &price);
     cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price});
+    cargos_pq.push(cargos.back());
   }
 
   for (uint8_t id = 0; id < ROBOT_MAX; ++id) {
@@ -359,11 +469,9 @@ uint32_t frameInput() {
     // 机器人所在位置坐标
     // status:  0 表示恢复状态,1 表示正常运行状态
     scanf("%u %u %u %u", &carryflag, &x, &y, &status);
-    robots[id] = {id, x, y, static_cast<Robot::Status>(status), carryflag};
+    robots[id] = {id, x, y, static_cast<Robot::Status>(status)};
     if (carryflag == 0) {
       robots[id]._carry_cargo_id = -1;
-    } else {
-      //! TBD
     }
   }
 
