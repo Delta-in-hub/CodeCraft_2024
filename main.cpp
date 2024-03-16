@@ -230,8 +230,6 @@ public:
       }
 
       bool operator>(const gridPqItem &rhs) const {
-        const auto &lhs_grid = _grids[_x][_y];
-        const auto &rhs_grid = _grids[rhs._x][rhs._y];
 
         const auto lhs_g = manhattanDistance(_from, {_x, _y});
         const auto lhs_h = manhattanDistance({_x, _y}, _to);
@@ -251,7 +249,8 @@ public:
     memset(inQueue, 0, sizeof(inQueue));
 
     static Direction road[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
-    std::fill_n(road, MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX, Direction::none);
+    std::fill_n(std::addressof(road[0][0]), MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX,
+                Direction::none);
 
     std::priority_queue<gridPqItem> pq;
     pq.push({from.first, from.second});
@@ -469,7 +468,11 @@ uint32_t frameInput() {
     // 机器人所在位置坐标
     // status:  0 表示恢复状态,1 表示正常运行状态
     scanf("%u %u %u %u", &carryflag, &x, &y, &status);
-    robots[id] = {id, x, y, static_cast<Robot::Status>(status)};
+    // robots[id] = {id, x, y, static_cast<Robot::Status>(status)};
+    robots[id]._id = id;
+    robots[id]._x = x;
+    robots[id]._y = y;
+    robots[id]._status = static_cast<Robot::Status>(status);
     if (carryflag == 0) {
       robots[id]._carry_cargo_id = -1;
     }
