@@ -3,7 +3,7 @@
 default: bin
 
 bin: main.cpp
-	g++ -o build/main *.cpp -std=c++17 -O2 -Wall -Wextra -Werror
+	g++ -o build/main *.cpp -std=c++17 -O2 -Wall -Wextra -Werror -DNDEBUG
 
 clean:
 	rm -rf build/main

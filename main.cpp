@@ -1,9 +1,40 @@
 #include "def.h"
+#include <algorithm>
 #include <array>
+#include <bitset>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <memory>
+#include <queue>
+#include <sys/types.h>
+#include <utility>
 #include <vector>
+
+// Order is IMPORTANT!
+enum class Direction : uint8_t {
+  right = 0,
+  left = 1,
+  up = 2,
+  down = 3,
+  none,
+};
+
+Direction reverse(Direction d) {
+  switch (d) {
+  case Direction::right:
+    return Direction::left;
+  case Direction::left:
+    return Direction::right;
+  case Direction::up:
+    return Direction::down;
+  case Direction::down:
+    return Direction::up;
+  default:
+    return Direction::none;
+  }
+}
 
 class RobotAction {
 public:
@@ -27,20 +58,26 @@ public:
 std::vector<RobotAction> robots_actions;
 std::vector<ShipAction> ships_actions;
 
+class Berth {
+public:
+  uint32_t _id;
+  uint32_t _x, _y;
+  uint32_t _time;     // 该泊位轮船运输到虚拟点的时间
+  uint32_t _velocity; // 该泊位的装载速度
+};
+std::array<Berth, BERTH_MAX> berths;
+
 class Map {
 public:
   enum class Type : uint8_t {
-    none,
-    space,
-    ocean,
     barrier,
-    robot,
+    ocean,
+    space,
     berth,
-    cargo,
   };
 
   static char _rawmap[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
-  void readmap() {
+  static void readmap() {
     for (uint32_t i = 0; i < MAP_X_AXIS_MAX; ++i) {
       scanf("%s", _rawmap[i]);
       /*
@@ -54,42 +91,120 @@ public:
     processRawmap();
   }
 
-  static struct MapPoint {
-    Type type;
-    uint8_t id;
-  } _map[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
+  static struct Grid {
+    Type _type;
+    std::bitset<sizeof(uint32_t) * 8>
+        _connected_berth; // if _type is berth, store self berth id, if _type
+                          // is space, store connected berth ids
+  } _grids[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
 
-  void processRawmap() {
+  static void processRawmap() {
     for (uint32_t i = 0; i < MAP_X_AXIS_MAX; ++i) {
       for (uint32_t j = 0; j < MAP_Y_AXIS_MAX; ++j) {
-        _map[i][j].id = -1;
         switch (_rawmap[i][j]) {
         case '.':
-          _map[i][j].type = Type::space;
+          _grids[i][j]._type = Type::space;
           break;
         case '*':
-          _map[i][j].type = Type::ocean;
+          _grids[i][j]._type = Type::ocean;
           break;
         case '#':
-          _map[i][j].type = Type::barrier;
+          _grids[i][j]._type = Type::barrier;
           break;
         case 'A':
-          _map[i][j].type = Type::robot;
+          _grids[i][j]._type = Type::space;
           break;
         case 'B':
-          _map[i][j].type = Type::berth;
+          _grids[i][j]._type = Type::berth;
           break;
         default:
-          _map[i][j].type = Type::none;
+          _grids[i][j]._type = Type::barrier;
           break;
         };
       }
     }
   }
+
+  // 四个方向的坐标变化, x 0,y 1
+  static const int _sdir[4][2];
+
+  /*
+    enum class Direction {
+      right = 0,
+      left = 1,
+      up = 2,
+      down = 3,
+    };
+  */
+
+  static bool isMoveAble(uint32_t x, uint32_t y) {
+    if (x >= MAP_X_AXIS_MAX or y >= MAP_Y_AXIS_MAX)
+      return false;
+    switch (_grids[x][y]._type) {
+    case Type::berth:
+    case Type::space:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  static Direction _toBerth[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX][BERTH_MAX];
+
+  static void processConnectedBerth(uint32_t berth_id) {
+    static bool visited[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
+    memset(visited, 0, sizeof(visited));
+    // Berth 4*4
+    for (uint32_t i = 0; i < 4; ++i) {
+      for (uint32_t j = 0; j < 4; ++j) {
+        uint32_t nx = berths[berth_id]._x + i;
+        uint32_t ny = berths[berth_id]._y + j;
+        assert(_grids[nx][ny]._type == Type::berth);
+        _grids[nx][ny]._connected_berth = berth_id;
+      }
+    }
+
+    // bfs
+    std::queue<std::pair<uint32_t, uint32_t>> q;
+    q.push({berths[berth_id]._x, berths[berth_id]._y});
+    while (not q.empty()) {
+      auto [nx, ny] = q.front();
+      q.pop();
+
+      visited[nx][ny] = true;
+      switch (_grids[nx][ny]._type) {
+      case Type::space:
+        _grids[nx][ny]._connected_berth.set(berth_id);
+        [[fallthrough]];
+      case Type::berth:
+        for (int i = 0; i < 4; i++) {
+          uint32_t dx = nx + _sdir[i][0];
+          uint32_t dy = ny + _sdir[i][1];
+          if (isMoveAble(dx, dy) and not visited[dx][dy]) {
+            _toBerth[dx][dy][berth_id] = reverse(static_cast<Direction>(i));
+            q.push({dx, dy});
+          }
+        }
+        break;
+      case Type::ocean:
+      case Type::barrier:
+      default:
+        break;
+      }
+    }
+  }
+
 } map;
 
 char Map::_rawmap[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
-Map::MapPoint Map::_map[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
+Map::Grid Map::_grids[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
+Direction Map::_toBerth[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX][BERTH_MAX];
+
+// Order is IMPORTANT!
+const int Map::_sdir[4][2] = {{0, 1},  // 右
+                              {0, -1}, // 左
+                              {-1, 0}, // 上
+                              {1, 0}}; // 下
 
 class Ship {
 public:
@@ -126,13 +241,6 @@ public:
   uint32_t _id;
   uint32_t _x, _y;
 
-  enum class Direction {
-    right = 0,
-    left = 1,
-    up = 2,
-    down = 3,
-  };
-
   enum class Status {
     recovering = 0,
     normal = 1,
@@ -141,8 +249,7 @@ public:
   uint32_t _carry_cargo_id;
 
   void move(Direction direction) {
-    map._map[_x][_y].type = Map::Type::space;
-    map._map[_x][_y].id = -1;
+
     switch (direction) {
     case Direction::right:
       _y++;
@@ -160,8 +267,6 @@ public:
       assert("Invalid direction" == nullptr);
       break;
     }
-    map._map[_x][_y].type = Map::Type::robot;
-    map._map[_x][_y].id = _id;
 
     // printf("move %u %u\n", _id, static_cast<uint32_t>(direction));
     robots_actions.push_back(
@@ -181,14 +286,6 @@ public:
   }
 };
 
-class Berth {
-public:
-  uint32_t _id;
-  uint32_t _x, _y;
-  uint32_t _time;     // 该泊位轮船运输到虚拟点的时间
-  uint32_t _velocity; // 该泊位的装载速度
-};
-
 class Cargo {
 public:
   uint32_t _id;
@@ -204,7 +301,6 @@ public:
 std::array<Robot, ROBOT_MAX> robots;
 
 std::array<Ship, SHIP_MAX> ships;
-std::array<Berth, BERTH_MAX> berths;
 
 // std::priority_queue<Cargo> pc;
 std::vector<Cargo> cargos;
@@ -214,7 +310,11 @@ void initialization() {
   robots_actions.reserve(ROBOT_MAX * FRAME_MAX);
   ships_actions.reserve(SHIP_MAX * FRAME_MAX);
 
+  std::fill_n(std::addressof(map._toBerth[0][0][0]),
+              MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX * BERTH_MAX, Direction::none);
+
   map.readmap();
+
   for (uint32_t i = 0; i < BERTH_MAX; i++) {
     uint32_t id, x, y, time, velocity;
     // time(1 <= time <=
@@ -223,6 +323,7 @@ void initialization() {
     // 5)表示该泊位的装载速度,即每帧可以装载的物品数,单位是:个。
     scanf("%u %u %u %u %u", &id, &x, &y, &time, &velocity);
     berths[i] = {id, x, y, time, velocity};
+    Map::processConnectedBerth(id);
   }
 
   // 船的容积,即最多能装的物品数。
@@ -335,6 +436,7 @@ int main() {
     auto p =
         freopen("/home/delta/workspace/huawei2024/maps/map1.txt", "r", stdin);
     assert(p);
+    *p = *p;
   }
 #endif
 
@@ -343,6 +445,7 @@ int main() {
   for (; frame_no <= FRAME_MAX; ++frame_no) {
     auto ret = frameInput();
     assert(ret == frame_no);
+    ret = ret;
 
     frameUpdate();
 
