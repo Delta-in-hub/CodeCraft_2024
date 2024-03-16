@@ -8,7 +8,6 @@
 #include <cstring>
 #include <memory>
 #include <queue>
-#include <sys/types.h>
 #include <utility>
 #include <vector>
 
@@ -55,6 +54,7 @@ public:
   uint8_t _param[2]; // ship: id,berth_id, go: id
 };
 
+// 因为先输出机器人操作,再输出船只操作,故先存起来
 std::vector<RobotAction> robots_actions;
 std::vector<ShipAction> ships_actions;
 
@@ -251,12 +251,17 @@ public:
     }
   }
 
+  static int manhattanDistance(const std::pair<int, int> &a,
+                               const std::pair<int, int> &b) {
+    return std::abs(a.first - b.first) + std::abs(a.second - b.second);
+  }
+
   static std::vector<Direction>
   aStarSearch(const std::pair<uint32_t, uint32_t> from,
               const std::pair<uint32_t, uint32_t> to) {
 
     // Solving ERR: Reference to local variable declared in enclosing function
-    static const auto _from = from;
+    // static const auto _from = from;
     static const auto _to = to;
 
     std::vector<Direction> pathd;
@@ -269,10 +274,7 @@ public:
 
     struct gridPqItem {
       uint32_t _x, _y;
-      static int manhattanDistance(const std::pair<int, int> &a,
-                                   const std::pair<int, int> &b) {
-        return std::abs(a.first - b.first) + std::abs(a.second - b.second);
-      }
+      uint32_t _steps; // steps from start grid
 
       // For priority queue , the smaller one is in the front
       bool operator<(const gridPqItem &rhs) const {
@@ -281,17 +283,15 @@ public:
 
       bool operator>(const gridPqItem &rhs) const {
 
-        const auto lhs_g = manhattanDistance(_from, {_x, _y});
+        const auto lhs_g = _steps;
         const auto lhs_h = manhattanDistance({_x, _y}, _to);
         const auto lhs_f = lhs_g + lhs_h;
 
-        const auto rhs_g = manhattanDistance(_from, {rhs._x, rhs._y});
+        const auto rhs_g = rhs._steps;
         const auto rhs_h = manhattanDistance({rhs._x, rhs._y}, _to);
         const auto rhs_f = rhs_g + rhs_h;
 
-        if (lhs_f == rhs_f)
-          return lhs_h > rhs_h;
-        return lhs_f > rhs_f;
+        return std::tie(lhs_f, lhs_h) > std::tie(rhs_f, rhs_h);
       }
     };
 
@@ -303,22 +303,25 @@ public:
                 Direction::none);
 
     std::priority_queue<gridPqItem> pq;
-    pq.push({from.first, from.second});
+    pq.push({from.first, from.second, 0});
 
     inQueue[from.first][from.second] = true;
 
     while (not pq.empty()) {
-      auto [x, y] = pq.top();
+      auto [x, y, step] = pq.top();
       pq.pop();
 
       assert(inQueue[x][y]);
 
       if (x == to.first and y == to.second) {
+        // backtrack
         while (x != from.first or y != from.second) {
           pathd.push_back(reverse(road[x][y]));
           x += _sdir[static_cast<int>(road[x][y])][0];
           y += _sdir[static_cast<int>(road[x][y])][1];
         }
+        // step is the shortest path length
+        assert(step == pathd.size());
         break;
       }
 
@@ -327,7 +330,7 @@ public:
         uint32_t ny = y + _sdir[i][1];
         if (isMoveAble(nx, ny) and not inQueue[nx][ny]) {
           road[nx][ny] = reverse(static_cast<Direction>(i)); //! Maybe bug here
-          pq.push({nx, ny});
+          pq.push({nx, ny, step + 1});
           inQueue[nx][ny] = true;
         }
       }
