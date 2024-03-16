@@ -1,12 +1,8 @@
 #include "def.h"
-#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
-#include <memory>
-#include <queue>
 #include <vector>
 
 class RobotAction {
@@ -45,7 +41,7 @@ public:
 
   static char _rawmap[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
   void readmap() {
-    for (int i = 0; i < MAP_X_AXIS_MAX; ++i) {
+    for (uint32_t i = 0; i < MAP_X_AXIS_MAX; ++i) {
       scanf("%s", _rawmap[i]);
       /*
 ‘.’ : 空地
@@ -64,8 +60,8 @@ public:
   } _map[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
 
   void processRawmap() {
-    for (int i = 0; i < MAP_X_AXIS_MAX; ++i) {
-      for (int j = 0; j < MAP_Y_AXIS_MAX; ++j) {
+    for (uint32_t i = 0; i < MAP_X_AXIS_MAX; ++i) {
+      for (uint32_t j = 0; j < MAP_Y_AXIS_MAX; ++j) {
         _map[i][j].id = -1;
         switch (_rawmap[i][j]) {
         case '.':
@@ -219,7 +215,7 @@ void initialization() {
   ships_actions.reserve(SHIP_MAX * FRAME_MAX);
 
   map.readmap();
-  for (int i = 0; i < BERTH_MAX; i++) {
+  for (uint32_t i = 0; i < BERTH_MAX; i++) {
     uint32_t id, x, y, time, velocity;
     // time(1 <= time <=
     // 1000)表示该泊位轮船运输到虚拟点的时间(虚拟点移动到泊位的时间同),即产生价值的时间,时间用帧数表示。
@@ -276,11 +272,9 @@ uint32_t frameInput() {
     //  2 表示泊位外等待状态
     int berth_id; // (0 <= berth_id < 10),如果目标泊位是虚拟点,则为-1
     scanf("%u %d", &status, &berth_id);
-    ships[id] = {
-        id,
-        static_cast<Ship::Status>(status),
-        berth_id,
-    };
+    ships[id]._id = id;
+    ships[id]._status = static_cast<Ship::Status>(status);
+    ships[id]._target_berth_id = berth_id;
   }
 
   char okk[32];
