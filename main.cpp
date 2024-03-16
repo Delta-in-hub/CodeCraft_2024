@@ -62,8 +62,10 @@ class Berth {
 public:
   uint32_t _id;
   uint32_t _x, _y;
-  uint32_t _time;     // 该泊位轮船运输到虚拟点的时间
-  uint32_t _velocity; // 该泊位的装载速度
+  uint32_t _time;                 // 该泊位轮船运输到虚拟点的时间
+  uint32_t _velocity;             // 该泊位的装载速度
+  std::queue<uint32_t> _shipIds;  // 该泊位的船只编号;
+  std::queue<uint32_t> _cargoIds; // 该泊位的货物编号;
 };
 std::array<Berth, BERTH_MAX> berths;
 
@@ -198,6 +200,54 @@ public:
       default:
         break;
       }
+    }
+  }
+
+  // return berth_id, -1 if {x,y} is not a berth
+  static int getBerthId(uint32_t x, uint32_t y) {
+    if (_grids[x][y]._type == Type::berth)
+      return _grids[x][y]._connected_berth.to_ulong();
+    return -1;
+  }
+
+  // is connected to any berth
+  static bool isConnected(uint32_t x, uint32_t y) {
+    switch (_grids[x][y]._type) {
+    case Type::space:
+      return _grids[x][y]._connected_berth.any();
+    case Type::berth:
+      return true;
+    case Type::ocean:
+    case Type::barrier:
+    default:
+      return false;
+    }
+  }
+
+  static bool isConnectedTo(uint32_t x, uint32_t y, uint32_t berth_id) {
+    switch (_grids[x][y]._type) {
+    case Type::space:
+      return _grids[x][y]._connected_berth.test(berth_id);
+    case Type::berth: {
+      auto current_berth_id = getBerthId(x, y);
+      auto x = berths[current_berth_id]._x;
+      auto y = berths[current_berth_id]._y;
+      for (int i = -1; i <= 4; i++) {
+        for (int j = -1; j <= 4; j++) {
+          auto nx = x + i;
+          auto ny = y + j;
+          if (not isMoveAble(nx, ny) or _grids[nx][ny]._type == Type::berth)
+            continue;
+          if (isConnectedTo(nx, ny, berth_id))
+            return true;
+        }
+      }
+      return false;
+    }
+    case Type::ocean:
+    case Type::barrier:
+    default:
+      return false;
     }
   }
 
@@ -338,6 +388,7 @@ public:
   enum class Status {
     recovering = 0,
     normal = 1,
+    useless, // 位于的区域封闭,与码头不连通
   } _status;
 
   uint32_t _carry_cargo_id;
@@ -392,6 +443,7 @@ public:
   CargoPqItem(uint32_t id) : _id(id) {}
   CargoPqItem(const Cargo &cargo) : _id(cargo._id) {}
   CargoPqItem(const CargoPqItem &item) : _id(item._id) {}
+
   bool operator<(const CargoPqItem &rhs) const {
     assert(_id < cargos.size());
     assert(rhs._id < cargos.size());
@@ -430,7 +482,13 @@ void initialization() {
     // Velocity(1 <= Velocity <=
     // 5)表示该泊位的装载速度,即每帧可以装载的物品数,单位是:个。
     scanf("%u %u %u %u %u", &id, &x, &y, &time, &velocity);
-    berths[i] = {id, x, y, time, velocity};
+    // berths[i] = {id, x, y, time, velocity};
+    berths[i]._id = id;
+    berths[i]._x = x;
+    berths[i]._y = y;
+    berths[i]._time = time;
+    berths[i]._velocity = velocity;
+
     Map::processConnectedBerth(id);
   }
 
@@ -458,6 +516,9 @@ uint32_t frameInput() {
     uint32_t x, y, price;
     // 货物的位置坐标、金额
     scanf("%u %u %u", &x, &y, &price);
+    if (not Map::isConnected(x, y)) // 货物在封闭区域,忽略之
+      continue;
+
     cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price});
     cargos_pq.push(cargos.back());
   }
@@ -465,14 +526,18 @@ uint32_t frameInput() {
   for (uint8_t id = 0; id < ROBOT_MAX; ++id) {
     uint32_t carryflag, x, y, status;
     // carryflag: 0 表示未携带物品,1 表示携带物品。
-    // 机器人所在位置坐标
+    // x,y 机器人所在位置坐标
     // status:  0 表示恢复状态,1 表示正常运行状态
     scanf("%u %u %u %u", &carryflag, &x, &y, &status);
-    // robots[id] = {id, x, y, static_cast<Robot::Status>(status)};
     robots[id]._id = id;
     robots[id]._x = x;
     robots[id]._y = y;
-    robots[id]._status = static_cast<Robot::Status>(status);
+
+    if (Map::isConnected(x, y))
+      robots[id]._status = Robot::Status::useless;
+    else
+      robots[id]._status = static_cast<Robot::Status>(status);
+
     if (carryflag == 0) {
       robots[id]._carry_cargo_id = -1;
     }
