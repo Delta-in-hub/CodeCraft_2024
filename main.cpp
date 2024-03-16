@@ -8,7 +8,6 @@
 #include <cstring>
 #include <memory>
 #include <queue>
-#include <sys/types.h>
 #include <utility>
 #include <vector>
 
@@ -152,6 +151,8 @@ public:
   static Direction _toBerth[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX][BERTH_MAX];
 
   static void processConnectedBerth(uint32_t berth_id) {
+    assert(berth_id < BERTH_MAX);
+
     static bool visited[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
     memset(visited, 0, sizeof(visited));
     // Berth 4*4
@@ -171,7 +172,10 @@ public:
       auto [nx, ny] = q.front();
       q.pop();
 
+      if (visited[nx][ny])
+        continue;
       visited[nx][ny] = true;
+
       switch (_grids[nx][ny]._type) {
       case Type::space:
         _grids[nx][ny]._connected_berth.set(berth_id);
@@ -223,6 +227,7 @@ public:
 
   void ship(uint32_t berth_target_id) {
     // printf("ship %u %u\n", _id, berth_id);
+    assert(berth_target_id < BERTH_MAX);
     ships_actions.push_back(
         {ShipAction::ActionType::ship,
          {static_cast<uint8_t>(_id), static_cast<uint8_t>(berth_target_id)}});
@@ -249,24 +254,19 @@ public:
   uint32_t _carry_cargo_id;
 
   void move(Direction direction) {
+    if (direction == Direction::none)
+      return;
 
-    switch (direction) {
-    case Direction::right:
-      _y++;
-      break;
-    case Direction::left:
-      _y--;
-      break;
-    case Direction::up:
-      _x--;
-      break;
-    case Direction::down:
-      _x++;
-      break;
-    default:
-      assert("Invalid direction" == nullptr);
-      break;
-    }
+    uint32_t tmp = static_cast<uint32_t>(direction);
+    assert(tmp < 4);
+
+    uint32_t dx = _x + Map::_sdir[tmp][0];
+    uint32_t dy = _y + Map::_sdir[tmp][1];
+
+    assert(Map::isMoveAble(dx, dy));
+
+    _x = dx;
+    _y = dy;
 
     // printf("move %u %u\n", _id, static_cast<uint32_t>(direction));
     robots_actions.push_back(
@@ -293,8 +293,8 @@ public:
   uint32_t _price; // 货物的价值
   bool operator<(const Cargo &rhs) const { return _price < rhs._price; }
   bool operator==(const Cargo &rhs) const {
-    return _id == rhs._id && _x == rhs._x && _y == rhs._y &&
-           _price == rhs._price;
+    return std::tie(_id, _x, _y, _price) ==
+           std::tie(rhs._id, rhs._x, rhs._y, rhs._price);
   }
 };
 

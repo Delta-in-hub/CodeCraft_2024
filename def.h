@@ -17,6 +17,3 @@ constexpr unsigned int FRAME_ROBOT_CRASH = 20; // frame length for robot crash
 constexpr unsigned int FRAME_MAX = 15000; // max frame number
 
 constexpr unsigned int FRAME_PER_SECOND = 50; // frame per second
-
-
-#define DEBUG
