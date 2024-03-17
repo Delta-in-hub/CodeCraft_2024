@@ -430,8 +430,8 @@ public:
     waiting = 2,
   } _status;
 
-  int _target_berth_id;
-  uint32_t _berth_now_id;
+  int _berth_id; // 目标泊位是虚拟点,则为-1
+
   uint32_t _size;
 
   void ship(uint32_t berth_target_id) {
@@ -505,6 +505,7 @@ public:
   uint32_t _id;
   uint32_t _x, _y;
   uint32_t _price; // 货物的价值
+  uint32_t _disappear_frame;
 };
 std::vector<Cargo> cargos;
 
@@ -541,8 +542,8 @@ std::priority_queue<CargoPqItem> cargos_pq;
 
 void initialization() {
   cargos.reserve(10 * FRAME_MAX);
-  robots_actions.reserve(ROBOT_MAX * FRAME_MAX);
-  ships_actions.reserve(SHIP_MAX * FRAME_MAX);
+  robots_actions.reserve(ROBOT_MAX);
+  ships_actions.reserve(SHIP_MAX);
 
   map.readmap();
 
@@ -554,11 +555,11 @@ void initialization() {
     // 5)表示该泊位的装载速度,即每帧可以装载的物品数,单位是:个。
     scanf("%u %u %u %u %u", &id, &x, &y, &time, &velocity);
     // berths[i] = {id, x, y, time, velocity};
-    berths[i]._id = id;
-    berths[i]._x = x;
-    berths[i]._y = y;
-    berths[i]._time = time;
-    berths[i]._velocity = velocity;
+    berths[id]._id = id;
+    berths[id]._x = x;
+    berths[id]._y = y;
+    berths[id]._time = time;
+    berths[id]._velocity = velocity;
 
     Map::processConnectedBerth(id);
   }
@@ -590,7 +591,8 @@ uint32_t frameInput() {
     if (not Map::isConnected(x, y)) // 货物在封闭区域,忽略之
       continue;
 
-    cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price});
+    cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price,
+                      frame_id + FRAME_CARGO_REMAIN});
     cargos_pq.push(cargos.back());
   }
 
@@ -604,7 +606,7 @@ uint32_t frameInput() {
     robots[id]._x = x;
     robots[id]._y = y;
 
-    if (Map::isConnected(x, y))
+    if (not Map::isConnected(x, y))
       robots[id]._status = Robot::Status::useless;
     else
       robots[id]._status = static_cast<Robot::Status>(status);
@@ -622,7 +624,7 @@ uint32_t frameInput() {
     scanf("%u %d", &status, &berth_id);
     ships[id]._id = id;
     ships[id]._status = static_cast<Ship::Status>(status);
-    ships[id]._target_berth_id = berth_id;
+    ships[id]._berth_id = berth_id;
   }
 
   char okk[32];
