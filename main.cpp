@@ -1,13 +1,14 @@
 #include "def.h"
 #include <algorithm>
 #include <array>
-#include <bitset>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <queue>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -95,14 +96,18 @@ public:
 
   static struct Grid {
     Type _type;
-    std::bitset<sizeof(uint32_t) * 8>
-        _connected_berth; // if _type is berth, store self berth id, if _type
-                          // is space, store connected berth ids
+    union {
+      uint32_t _berth_id; // if type is berth, then this is the id of the berth
+      uint16_t _dis[BERTH_MAX]; // else this is the distance to the ith berth ,
+                                // -1 表示不可达. 地图200*200,最长的路径 uint16
+                                // 也足够
+    };
   } _grids[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
 
   static void processRawmap() {
     for (uint32_t i = 0; i < MAP_X_AXIS_MAX; ++i) {
       for (uint32_t j = 0; j < MAP_Y_AXIS_MAX; ++j) {
+        std::fill_n(std::addressof(_grids[i][j]._dis[0]), BERTH_MAX, -1);
         switch (_rawmap[i][j]) {
         case '.':
           _grids[i][j]._type = Type::space;
@@ -151,46 +156,46 @@ public:
     }
   }
 
-  static Direction _toBerth[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX][BERTH_MAX];
-
   static void processConnectedBerth(uint32_t berth_id) {
     assert(berth_id < BERTH_MAX);
 
     static bool inQueue[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
     memset(inQueue, 0, sizeof(inQueue));
+
     // Berth 4*4
     for (uint32_t i = 0; i < 4; ++i) {
       for (uint32_t j = 0; j < 4; ++j) {
         uint32_t nx = berths[berth_id]._x + i;
         uint32_t ny = berths[berth_id]._y + j;
         assert(_grids[nx][ny]._type == Type::berth);
-        _grids[nx][ny]._connected_berth = berth_id;
+        _grids[nx][ny]._berth_id = berth_id;
       }
     }
 
+    // <x,y,step>
+    using Tup = std::tuple<uint32_t, uint32_t, uint32_t>;
+
     // bfs
-    std::queue<std::pair<uint32_t, uint32_t>> q;
-    q.push({berths[berth_id]._x, berths[berth_id]._y});
+    std::queue<Tup> q;
+    q.push({berths[berth_id]._x, berths[berth_id]._y, 0});
     inQueue[berths[berth_id]._x][berths[berth_id]._y] = true;
 
     while (not q.empty()) {
-      auto [nx, ny] = q.front();
+      auto [nx, ny, step] = q.front();
       q.pop();
 
       assert(inQueue[nx][ny]);
 
       switch (_grids[nx][ny]._type) {
       case Type::space:
-        _grids[nx][ny]._connected_berth.set(berth_id);
+        _grids[nx][ny]._dis[berth_id] = step;
         [[fallthrough]];
       case Type::berth:
         for (int i = 0; i < 4; i++) {
           uint32_t dx = nx + _sdir[i][0];
           uint32_t dy = ny + _sdir[i][1];
           if (isMoveAble(dx, dy) and not inQueue[dx][dy]) {
-            _toBerth[dx][dy][berth_id] =
-                reverse(static_cast<Direction>(i)); //! Maybe bug here
-            q.push({dx, dy});
+            q.push({dx, dy, step + 1});
             inQueue[dx][dy] = true;
           }
         }
@@ -206,15 +211,18 @@ public:
   // return berth_id, -1 if {x,y} is not a berth
   static int getBerthId(uint32_t x, uint32_t y) {
     if (_grids[x][y]._type == Type::berth)
-      return _grids[x][y]._connected_berth.to_ulong();
+      return _grids[x][y]._berth_id;
     return -1;
   }
 
   // is connected to any berth
   static bool isConnected(uint32_t x, uint32_t y) {
     switch (_grids[x][y]._type) {
-    case Type::space:
-      return _grids[x][y]._connected_berth.any();
+    case Type::space: {
+      const auto &arr = _grids[x][y]._dis;
+      auto minp = std::min_element(std::begin(arr), std::end(arr));
+      return *minp != static_cast<uint16_t>(-1);
+    }
     case Type::berth:
       return true;
     case Type::ocean:
@@ -226,10 +234,15 @@ public:
 
   static bool isConnectedTo(uint32_t x, uint32_t y, uint32_t berth_id) {
     switch (_grids[x][y]._type) {
-    case Type::space:
-      return _grids[x][y]._connected_berth.test(berth_id);
+    case Type::space: {
+      const auto &arr = _grids[x][y]._dis;
+      return arr[berth_id] != static_cast<uint16_t>(-1);
+    }
     case Type::berth: {
-      auto current_berth_id = getBerthId(x, y);
+      uint32_t current_berth_id = getBerthId(x, y);
+      assert(current_berth_id < BERTH_MAX);
+      if (current_berth_id == berth_id)
+        return true;
       auto x = berths[current_berth_id]._x;
       auto y = berths[current_berth_id]._y;
       for (int i = -1; i <= 4; i++) {
@@ -249,6 +262,63 @@ public:
     default:
       return false;
     }
+  }
+
+  // _grid[x][y] should be space , otherwise return 0
+  static uint32_t countConnectedBerth(uint32_t x, uint32_t y) {
+    const auto &grid = _grids[x][y];
+    switch (grid._type) {
+    case Type::space: {
+      const auto &arr = grid._dis;
+      return std::count_if(std::begin(arr), std::end(arr), [](uint16_t i) {
+        assert(i <= MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX);
+        return i != static_cast<uint16_t>(-1);
+      });
+      break;
+    }
+    default:
+      break;
+    }
+    return 0;
+  }
+
+  // return Nearest Berth id
+  static uint32_t nearestBerth(uint32_t x, uint32_t y) {
+    const auto &grid = _grids[x][y];
+    switch (grid._type) {
+    case Type::berth:
+      return getBerthId(x, y);
+    case Type::space: {
+      const auto &arr = grid._dis;
+      auto minp = std::min_element(std::begin(arr), std::end(arr));
+      if (*minp != static_cast<uint16_t>(-1))
+        return -1;
+      return std::distance(std::begin(arr), minp);
+    }
+    default:
+      return -1;
+    }
+  }
+
+  // <berthid, distance> [x,y] should be space
+  static std::vector<std::pair<uint32_t, uint32_t>> connectedBerth(uint32_t x,
+                                                                   uint32_t y) {
+    std::vector<std::pair<uint32_t, uint32_t>> res;
+    const auto &grid = _grids[x][y];
+    switch (grid._type) {
+    case Type::berth:
+      res.push_back({getBerthId(x, y), 0});
+      break;
+    case Type::space: {
+      for (uint32_t i = 0; i < BERTH_MAX; i++) {
+        if (grid._dis[i] != static_cast<uint16_t>(-1))
+          res.push_back({i, grid._dis[i]});
+      }
+    }
+    default:
+      break;
+    }
+    return res;
   }
 
   static int manhattanDistance(const std::pair<int, int> &a,
@@ -342,7 +412,6 @@ public:
 
 char Map::_rawmap[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
 Map::Grid Map::_grids[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
-Direction Map::_toBerth[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX][BERTH_MAX];
 
 // Order is IMPORTANT!
 const int Map::_sdir[4][2] = {{0, 1},  // 右
@@ -451,18 +520,20 @@ public:
     assert(_id < cargos.size());
     assert(rhs._id < cargos.size());
 
-    const auto &lhs = cargos[this->_id];
+    const auto &lhs_cargo = cargos[this->_id];
     const auto &rhs_cargo = cargos[rhs._id];
-    const Map::Grid &lhs_grid = map._grids[lhs._x][lhs._y];
-    const Map::Grid &rhs_grid = map._grids[rhs_cargo._x][rhs_cargo._y];
-    const auto lc = lhs_grid._connected_berth.count();
-    const auto rc = rhs_grid._connected_berth.count();
+
+    auto &&lcv = Map::connectedBerth(lhs_cargo._x, lhs_cargo._y);
+    auto &&rcv = Map::connectedBerth(rhs_cargo._x, rhs_cargo._y);
+
+    const auto lc = lcv.size();
+    const auto rc = rcv.size();
 
     if (lc == 0 or rc == 0)
       return lc < rc;
 
     // ! TBD Better
-    return std::tie(lhs._price, lc) < std::tie(rhs_cargo._price, rc);
+    return std::tie(lhs_cargo._price, lc) < std::tie(rhs_cargo._price, rc);
   }
 };
 
@@ -472,9 +543,6 @@ void initialization() {
   cargos.reserve(10 * FRAME_MAX);
   robots_actions.reserve(ROBOT_MAX * FRAME_MAX);
   ships_actions.reserve(SHIP_MAX * FRAME_MAX);
-
-  std::fill_n(std::addressof(map._toBerth[0][0][0]),
-              MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX * BERTH_MAX, Direction::none);
 
   map.readmap();
 
