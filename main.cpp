@@ -12,6 +12,10 @@
 #include <utility>
 #include <vector>
 
+uint32_t frame_current = 1;
+
+const uint32_t &getCurrentFrame() { return frame_current; }
+
 // Order is IMPORTANT!
 enum class Direction : uint8_t {
   right = 0,
@@ -282,25 +286,26 @@ public:
     return 0;
   }
 
-  // return Nearest Berth id
-  static uint32_t nearestBerth(uint32_t x, uint32_t y) {
+  // return Nearest Berth <id,distance>
+  static std::pair<uint32_t, uint32_t> nearestBerth(uint32_t x, uint32_t y) {
     const auto &grid = _grids[x][y];
     switch (grid._type) {
     case Type::berth:
-      return getBerthId(x, y);
+      return {getBerthId(x, y), 0};
     case Type::space: {
       const auto &arr = grid._dis;
       auto minp = std::min_element(std::begin(arr), std::end(arr));
       if (*minp != static_cast<uint16_t>(-1))
-        return -1;
-      return std::distance(std::begin(arr), minp);
+        return {-1, -1};
+      const auto id = std::distance(std::begin(arr), minp);
+      return {id, arr[id]};
     }
     default:
-      return -1;
+      return {-1, -1};
     }
   }
 
-  // <berthid, distance> [x,y] should be space
+  // <berthid, distance（实际最短距离）> [x,y] should be space
   static std::vector<std::pair<uint32_t, uint32_t>> connectedBerth(uint32_t x,
                                                                    uint32_t y) {
     std::vector<std::pair<uint32_t, uint32_t>> res;
@@ -321,8 +326,8 @@ public:
     return res;
   }
 
-  static int manhattanDistance(const std::pair<int, int> &a,
-                               const std::pair<int, int> &b) {
+  static uint32_t manhattanDistance(const std::pair<int, int> &a,
+                                    const std::pair<int, int> &b) {
     return std::abs(a.first - b.first) + std::abs(a.second - b.second);
   }
 
@@ -463,7 +468,8 @@ public:
     useless, // 位于的区域封闭,与码头不连通
   } _status;
 
-  uint32_t _carry_cargo_id;
+  uint32_t _carry_cargo_id; // -1 means 空
+  // uint32_t _target_cargo_id;
 
   void move(Direction direction) {
     if (direction == Direction::none)
@@ -517,12 +523,39 @@ public:
   CargoPqItem(const Cargo &cargo) : _id(cargo._id) {}
   CargoPqItem(const CargoPqItem &item) : _id(item._id) {}
 
+  // <manhattan,robotsid>  sorted by manhattan distance , nearest is the first
+  static std::vector<std::pair<uint32_t, uint32_t>>
+  manhattanRobots(uint32_t cargo_id) {
+    std::vector<std::pair<uint32_t, uint32_t>> ret;
+    auto cx = cargos[cargo_id]._x, cy = cargos[cargo_id]._y;
+    for (auto &&robot : robots) {
+      uint32_t manha;
+      if (robot._status == Robot::Status::useless or
+          robot._carry_cargo_id != -1) {
+        manha = -1;
+      } else {
+        manha = Map::manhattanDistance({cx, cy}, {robot._x, robot._y});
+      }
+      ret.push_back({manha, robot._id});
+    }
+    std::sort(begin(ret), end(ret));
+    return ret;
+  }
+
   bool operator<(const CargoPqItem &rhs) const {
     assert(_id < cargos.size());
     assert(rhs._id < cargos.size());
 
     const auto &lhs_cargo = cargos[this->_id];
     const auto &rhs_cargo = cargos[rhs._id];
+
+    const int lhs_remain_frame = lhs_cargo._disappear_frame - getCurrentFrame();
+    const int rhs_remain_frame = rhs_cargo._disappear_frame - getCurrentFrame();
+    if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
+      return lhs_remain_frame < rhs_remain_frame;
+
+    auto &&lhs_dis_rot = manhattanRobots(lhs_cargo._id);
+    auto &&rhs_dis_rot = manhattanRobots(rhs_cargo._id);
 
     auto &&lcv = Map::connectedBerth(lhs_cargo._x, lhs_cargo._y);
     auto &&rcv = Map::connectedBerth(rhs_cargo._x, rhs_cargo._y);
@@ -580,6 +613,8 @@ uint32_t frameInput() {
   uint64_t money;
   // 表示帧序号(从 1 开始递增) 、当前金钱数
   scanf("%u %lu", &frame_id, &money);
+
+  assert(frame_id == frame_current);
 
   uint32_t K;
   // 场上新增货物的数量 K
@@ -675,8 +710,6 @@ void frameDone() {
   ships_actions.clear();
 }
 
-uint32_t frame_no = 1;
-
 int main() {
   // Using C style IO , for performance
 
@@ -691,9 +724,9 @@ int main() {
 
   initialization();
 
-  for (; frame_no <= FRAME_MAX; ++frame_no) {
+  for (; frame_current <= FRAME_MAX; ++frame_current) {
     auto ret = frameInput();
-    assert(ret == frame_no);
+    assert(ret == frame_current);
     ret = ret;
 
     frameUpdate();
