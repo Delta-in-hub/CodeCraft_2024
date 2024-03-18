@@ -7,10 +7,13 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <queue>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -470,7 +473,7 @@ public:
     useless, // 位于的区域封闭,与码头不连通
   } _status;
 
-  uint32_t _carry_cargo_id; // -1 means 空
+  uint32_t _carry_cargo_id; // -1 表示机器人尚未装货, 或则表示装着 [id] 货物
   // uint32_t _target_cargo_id;
 
   void move(Direction direction) {
@@ -514,6 +517,7 @@ public:
   uint32_t _x, _y;
   uint32_t _price; // 货物的价值
   uint32_t _disappear_frame;
+  bool _taken; // 被机器人已经拿起
 };
 std::vector<Cargo> cargos;
 
@@ -574,6 +578,11 @@ public:
     const auto &lhs_cargo = cargos[this->_id];
     const auto &rhs_cargo = cargos[rhs._id];
 
+    const int lhs_flag = lhs_cargo._taken ? 1 : 0;
+    const int rhs_flag = rhs_cargo._taken ? 1 : 0;
+    if (lhs_flag or rhs_flag)
+      return lhs_flag > rhs_flag;
+
     int32_t lhs_remain_frame = lhs_cargo._disappear_frame - getCurrentFrame();
     int32_t rhs_remain_frame = rhs_cargo._disappear_frame - getCurrentFrame();
     if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
@@ -601,9 +610,17 @@ public:
 
     return lhs_score < rhs_score;
   }
+
+  bool operator==(const CargoPqItem &rhs) const { return _id == rhs._id; }
+  bool operator>(const CargoPqItem &rhs) const {
+    if (*this == rhs)
+      return false;
+    return rhs < *this;
+  }
 };
 
-std::priority_queue<CargoPqItem> cargos_pq;
+// std::priority_queue<CargoPqItem> cargos_pq;
+std::vector<CargoPqItem> cargo_pqs;
 
 void initialization() {
   cargos.reserve(10 * FRAME_MAX);
@@ -659,8 +676,9 @@ uint32_t frameInput() {
       continue;
 
     cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price,
-                      frame_id + FRAME_CARGO_REMAIN});
-    cargos_pq.push(cargos.back());
+                      frame_id + FRAME_CARGO_REMAIN, false});
+    // cargos_pq.push(cargos.back());
+    cargo_pqs.push_back(cargos.back());
   }
 
   for (uint8_t id = 0; id < ROBOT_MAX; ++id) {
@@ -699,7 +717,106 @@ uint32_t frameInput() {
   return frame_id;
 };
 
-void frameUpdate() {}
+class CargoRobotDispatcher {
+  std::unordered_set<uint32_t> _unavaiable_robs;
+  // key <rob_id,cargo_id> value <Direction>
+  std::map<std::pair<uint32_t, uint32_t>, Direction> _robs_act;
+
+public:
+  CargoRobotDispatcher() {
+    for (uint32_t i = 0; i < ROBOT_MAX; ++i) {
+      const auto &rob = robots[i];
+      if (rob._carry_cargo_id != -1 or rob._status != Robot::Status::normal)
+        _unavaiable_robs.insert(i);
+    }
+  }
+  CargoRobotDispatcher(const CargoRobotDispatcher &rhs) = delete;
+  uint32_t countAvaiableRobots() const {
+    assert(_unavaiable_robs.size() <= ROBOT_MAX);
+    return ROBOT_MAX - _unavaiable_robs.size();
+  }
+
+  uint32_t dispatch(uint32_t cargo_id, uint32_t bestof = 3) {
+    std::vector<std::pair<uint32_t, uint32_t>> res; // {distance, robot_id}
+    const auto &manh_robs = CargoPqItem::manhattanRobots(cargo_id);
+    for (uint32_t i = 0; i < bestof and i < manh_robs.size(); ++i) {
+      const auto rid = manh_robs[i].second;
+      if (manh_robs[i].first == 0) {
+        res.push_back({0, rid});
+        _robs_act[{rid, cargo_id}] = Direction::none;
+        break;
+      }
+      if (_unavaiable_robs.count(rid))
+        continue;
+      auto &&astar =
+          Map::aStarSearch({robots[rid]._x, robots[rid]._y},
+                           {cargos[cargo_id]._x, cargos[cargo_id]._y});
+      res.push_back({astar.size(), rid});
+      _robs_act[{rid, cargo_id}] = astar.front();
+    }
+    if (not res.empty()) {
+      auto minp = std::min_element(begin(res), end(res));
+      _unavaiable_robs.insert(minp->second);
+      return minp->second;
+    }
+    return -1;
+  }
+
+  Direction getDirection(uint32_t rob_id, uint32_t cargo_id) const {
+    auto it = _robs_act.find({rob_id, cargo_id});
+    if (it == end(_robs_act))
+      return Direction::none;
+    return it->second;
+  }
+};
+
+void frameUpdate() {
+  std::sort(rbegin(cargo_pqs), rend(cargo_pqs));
+
+  while (not cargo_pqs.empty()) {
+    const auto back = cargo_pqs.back();
+    bool flag = cargos[back._id]._taken;
+    int rem = cargos[back._id]._disappear_frame - getCurrentFrame();
+    if (rem <= 0)
+      flag = true;
+    if (flag)
+      cargo_pqs.pop_back();
+    else
+      break;
+  }
+
+  CargoRobotDispatcher dispatcher;
+  int avaiable_rots = dispatcher.countAvaiableRobots();
+
+  for (uint32_t i = 0; i < cargo_pqs.size() and avaiable_rots > 0; ++i) {
+    const auto &cargo = cargos[cargo_pqs[i]._id];
+    if (cargo._taken)
+      continue;
+    if (cargo._disappear_frame <= getCurrentFrame())
+      continue;
+    auto rob_id = dispatcher.dispatch(cargo._id);
+    if (rob_id != -1) {
+      avaiable_rots--;
+    }
+    auto &rob = robots[rob_id];
+    // let rob_id goto cargo._id
+    auto dir = dispatcher.getDirection(rob_id, cargo._id);
+    if (dir == Direction::none) {
+      rob.get();
+      rob._carry_cargo_id = cargo._id;
+    } else {
+      rob.move(dir); // ! 碰撞避免 not done
+    }
+  }
+
+  // Now let robots which is with cargo moving
+  for (auto &&rob : robots) {
+    if (rob._status != Robot::Status::normal)
+      continue;
+    if (rob._carry_cargo_id == -1) // without cargo
+      continue;
+  }
+}
 
 void frameOutput() {
   for (auto &&action : robots_actions) {
