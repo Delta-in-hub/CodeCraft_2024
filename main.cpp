@@ -6,7 +6,9 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <memory>
+#include <numeric>
 #include <queue>
 #include <tuple>
 #include <utility>
@@ -286,26 +288,26 @@ public:
     return 0;
   }
 
-  // return Nearest Berth <id,distance>
+  // return Nearest Berth <distance,id>
   static std::pair<uint32_t, uint32_t> nearestBerth(uint32_t x, uint32_t y) {
     const auto &grid = _grids[x][y];
     switch (grid._type) {
     case Type::berth:
-      return {getBerthId(x, y), 0};
+      return {0, getBerthId(x, y)};
     case Type::space: {
       const auto &arr = grid._dis;
       auto minp = std::min_element(std::begin(arr), std::end(arr));
-      if (*minp != static_cast<uint16_t>(-1))
+      if (*minp == static_cast<uint16_t>(-1))
         return {-1, -1};
       const auto id = std::distance(std::begin(arr), minp);
-      return {id, arr[id]};
+      return {arr[id], id};
     }
     default:
       return {-1, -1};
     }
   }
 
-  // <berthid, distance（实际最短距离）> [x,y] should be space
+  // <berthid, distance（地图上最短距离）> [x,y] should be space
   static std::vector<std::pair<uint32_t, uint32_t>> connectedBerth(uint32_t x,
                                                                    uint32_t y) {
     std::vector<std::pair<uint32_t, uint32_t>> res;
@@ -523,23 +525,46 @@ public:
   CargoPqItem(const Cargo &cargo) : _id(cargo._id) {}
   CargoPqItem(const CargoPqItem &item) : _id(item._id) {}
 
-  // <manhattan,robotsid>  sorted by manhattan distance , nearest is the first
+  // <manhattan,robotsid> if {sorted} is true, sorted by manhattan distance
   static std::vector<std::pair<uint32_t, uint32_t>>
-  manhattanRobots(uint32_t cargo_id) {
+  manhattanRobots(uint32_t cargo_id, bool sorted = true) {
     std::vector<std::pair<uint32_t, uint32_t>> ret;
     auto cx = cargos[cargo_id]._x, cy = cargos[cargo_id]._y;
     for (auto &&robot : robots) {
-      uint32_t manha;
       if (robot._status == Robot::Status::useless or
-          robot._carry_cargo_id != -1) {
-        manha = -1;
-      } else {
-        manha = Map::manhattanDistance({cx, cy}, {robot._x, robot._y});
-      }
+          robot._carry_cargo_id != static_cast<uint32_t>(-1))
+        continue;
+      auto manha = Map::manhattanDistance({cx, cy}, {robot._x, robot._y});
       ret.push_back({manha, robot._id});
     }
-    std::sort(begin(ret), end(ret));
+    if (sorted)
+      std::sort(begin(ret), end(ret));
     return ret;
+  }
+
+  // <manhattan distance, robot id>
+  static std::pair<uint32_t, uint32_t>
+  nearestRobotByManhattan(uint32_t cargo_id) {
+    auto &&manha = CargoPqItem::manhattanRobots(cargo_id, false);
+    if (manha.empty())
+      return {-1, -1};
+    const auto &p = std::min_element(begin(manha), end(manha));
+    return *p;
+  }
+
+  static float averageManhattanRob(const uint32_t cargo_id,
+                                   uint32_t iter_max = 3) {
+    assert(cargo_id < cargos.size());
+    const auto &rs = manhattanRobots(cargo_id);
+    uint32_t cnt = 0;
+    uint32_t manh_sum = 0;
+    for (; cnt < rs.size() and cnt < iter_max; ++cnt) {
+      const auto [manh, rid] = rs[cnt];
+      manh_sum += manh;
+    }
+    if (cnt == 0)
+      return std::numeric_limits<float>::max();
+    return static_cast<float>(manh_sum) / cnt;
   }
 
   bool operator<(const CargoPqItem &rhs) const {
@@ -549,25 +574,32 @@ public:
     const auto &lhs_cargo = cargos[this->_id];
     const auto &rhs_cargo = cargos[rhs._id];
 
-    const int lhs_remain_frame = lhs_cargo._disappear_frame - getCurrentFrame();
-    const int rhs_remain_frame = rhs_cargo._disappear_frame - getCurrentFrame();
+    int32_t lhs_remain_frame = lhs_cargo._disappear_frame - getCurrentFrame();
+    int32_t rhs_remain_frame = rhs_cargo._disappear_frame - getCurrentFrame();
     if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
       return lhs_remain_frame < rhs_remain_frame;
 
-    auto &&lhs_dis_rot = manhattanRobots(lhs_cargo._id);
-    auto &&rhs_dis_rot = manhattanRobots(rhs_cargo._id);
+    const auto &[lhs_nb_dis, lhs_nb_id] =
+        Map::nearestBerth(lhs_cargo._x, lhs_cargo._y);
+    const auto &[rhs_nb_dis, rhs_nb_id] =
+        Map::nearestBerth(rhs_cargo._x, rhs_cargo._y);
 
-    auto &&lcv = Map::connectedBerth(lhs_cargo._x, lhs_cargo._y);
-    auto &&rcv = Map::connectedBerth(rhs_cargo._x, rhs_cargo._y);
+    float lhs_avg_rob = averageManhattanRob(lhs_cargo._id);
+    float rhs_avg_rob = averageManhattanRob(rhs_cargo._id);
 
-    const auto lc = lcv.size();
-    const auto rc = rcv.size();
+    lhs_remain_frame -= (lhs_nb_dis + lhs_avg_rob);
+    rhs_remain_frame -= (rhs_nb_dis + rhs_avg_rob);
 
-    if (lc == 0 or rc == 0)
-      return lc < rc;
+    if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
+      return lhs_remain_frame < rhs_remain_frame;
 
-    // ! TBD Better
-    return std::tie(lhs_cargo._price, lc) < std::tie(rhs_cargo._price, rc);
+    const auto lhs_price = lhs_cargo._price;
+    const auto rhs_price = rhs_cargo._price;
+
+    float lhs_score = lhs_price / (lhs_nb_dis + lhs_avg_rob);
+    float rhs_score = rhs_price / (rhs_nb_dis + rhs_avg_rob);
+
+    return lhs_score < rhs_score;
   }
 };
 
