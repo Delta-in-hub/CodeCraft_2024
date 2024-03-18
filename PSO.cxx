@@ -17,7 +17,7 @@ enum class Direction : uint8_t{
     none = 4,
 };
 
-class Partial{
+class Particle{
 public:
     std::array<int32_t , ROBOT_NUM> cargo_val;
     std::array<std::pair<int8_t , int8_t>, ROBOT_NUM> sourcePoint;   //对应每个机器人的出发点与目标点
@@ -147,12 +147,34 @@ private:
 
 };
 
-class PSO_Algorithm{
+class PSO_Algorithm : public Particle{
 public:
     //传入初始参数
-    PSO_Algorithm(){
-
+    PSO_Algorithm(uint8_t particle_num, double w, double c_1, double c_2){
+        this->w = w;
+        this->c_1 = c_1;
+        this->c_2 = c_2;
+        this->particle_num = particle_num;
     }
 
+    void Initialize(){
+        std::vector<Particle> Particles;
+        Particles.resize(particle_num);
+        for(auto &particle : Particles){
+            particle.Initialize();    //为每个粒子进行初始化
+        }
+        Gbest_benefit = Particles[0].frame_benefit();
+//        Gbest_position = Particles[0].
+    }
+
+    //更新gpest   并用static变量记录gbest未更新的次数
+
+private:
+    double w;  //惯性参数
+    double c_1, c_2; //学习因子
+    uint8_t particle_num;
+    int32_t Gbest_benefit;
+    std::array<Direction, ROBOT_NUM> Gbest_position;
 };
+
 
