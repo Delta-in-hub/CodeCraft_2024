@@ -2,15 +2,18 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
 #include <numeric>
 #include <queue>
+#include <random>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -30,6 +33,15 @@ enum class Direction : uint8_t {
   none,
 };
 
+const std::array<uint8_t, 5> &getRandomDir() {
+  static std::random_device rd;
+  static std::mt19937 gen(rd());
+  static std::array<uint8_t, 5> dir{0, 1, 2, 3, 4};
+
+  std::shuffle(dir.begin(), dir.end(), gen);
+  return cref(dir);
+}
+
 Direction reverse(Direction d) {
   switch (d) {
   case Direction::right:
@@ -44,6 +56,26 @@ Direction reverse(Direction d) {
     return Direction::none;
   }
 }
+
+class TimeCounter {
+public:
+  TimeCounter(const char *p) {
+    start = std::chrono::high_resolution_clock::now();
+    funcname = p;
+  }
+
+  ~TimeCounter() {
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    if (duration > std::chrono::milliseconds(5))
+      std::cerr << funcname << " Elapsed time: " << duration.count() << " ms\n";
+  }
+
+private:
+  const char *funcname = nullptr;
+  std::chrono::time_point<std::chrono::high_resolution_clock> start;
+};
 
 class RobotAction {
 public:
@@ -72,10 +104,12 @@ class Berth {
 public:
   uint32_t _id;
   uint32_t _x, _y;
-  uint32_t _time;                 // 该泊位轮船运输到虚拟点的时间
-  uint32_t _velocity;             // 该泊位的装载速度
-  std::queue<uint32_t> _shipIds;  // 该泊位的船只编号;
-  std::queue<uint32_t> _cargoIds; // 该泊位的货物编号;
+  uint32_t _time;     // 该泊位轮船运输到虚拟点的时间
+  uint32_t _velocity; // 该泊位的装载速度
+  uint32_t _cargo_ongoing;
+  std::deque<std::pair<uint32_t, uint32_t>>
+      _shipIds; // 该泊位的船只编号; {arrive_frame,ship id}
+  std::deque<uint32_t> _cargoIds; // 该泊位的货物编号;
 };
 std::array<Berth, BERTH_MAX> berths;
 
@@ -339,7 +373,7 @@ public:
   static std::vector<Direction>
   aStarSearch(const std::pair<uint32_t, uint32_t> from,
               const std::pair<uint32_t, uint32_t> to) {
-
+    TimeCounter _tc{__FUNCTION__};
     // Solving ERR: Reference to local variable declared in enclosing function
     // static const auto _from = from;
     static const auto _to = to;
@@ -395,13 +429,23 @@ public:
 
       if (x == to.first and y == to.second) {
         // backtrack
-        while (x != from.first or y != from.second) {
+        while (not(x == from.first and y == from.second)) {
+          int idx = static_cast<int>(road[x][y]);
           pathd.push_back(reverse(road[x][y]));
-          x += _sdir[static_cast<int>(road[x][y])][0];
-          y += _sdir[static_cast<int>(road[x][y])][1];
+          assert(road[x][y] != Direction::none);
+          assert(idx < 4);
+          x += _sdir[idx][0];
+          y += _sdir[idx][1];
+          assert(isMoveAble(x, y));
         }
         // step is the shortest path length
-        assert(step == pathd.size());
+        if (step != pathd.size()) {
+          for (auto &&dir : pathd) {
+            std::cerr << "pathd: " << static_cast<int>(dir) << std::endl;
+          }
+          std::cerr << step << " " << pathd.size() << std::endl;
+          assert(step == pathd.size());
+        }
         break;
       }
 
@@ -409,8 +453,10 @@ public:
         uint32_t nx = x + _sdir[i][0];
         uint32_t ny = y + _sdir[i][1];
         if (isMoveAble(nx, ny) and not inQueue[nx][ny]) {
+          assert(road[nx][ny] == Direction::none);
           road[nx][ny] = reverse(static_cast<Direction>(i)); //! Maybe bug here
           pq.push({nx, ny, step + 1});
+          assert(inQueue[nx][ny] == false);
           inQueue[nx][ny] = true;
         }
       }
@@ -462,6 +508,9 @@ uint32_t Ship::capacity = -1;
 
 std::array<Ship, SHIP_MAX> ships;
 
+bool getOutOfMyWay(std::vector<uint8_t> &boss, uint32_t rid);
+uint32_t isThereARobot(uint32_t x, uint32_t y);
+
 class Robot {
 public:
   uint32_t _id;
@@ -476,9 +525,11 @@ public:
   uint32_t _carry_cargo_id; // -1 表示机器人尚未装货, 或则表示装着 [id] 货物
   // uint32_t _target_cargo_id;
 
-  void move(Direction direction) {
-    if (direction == Direction::none)
-      return;
+  bool _already_moved;
+
+  bool move(Direction direction) {
+    if (direction == Direction::none or _already_moved)
+      return false;
 
     uint32_t tmp = static_cast<uint32_t>(direction);
     assert(tmp < 4);
@@ -487,29 +538,98 @@ public:
     uint32_t dy = _y + Map::_sdir[tmp][1];
 
     assert(Map::isMoveAble(dx, dy));
+    int rid = isThereARobot(dx, dy);
+    if (rid != -1) {
+      std::vector<uint8_t> boss;
+      boss.push_back(this->_id);
+      auto flag = getOutOfMyWay(boss, rid);
+      if (not flag)
+        return false;
+    }
 
     _x = dx;
     _y = dy;
+    _already_moved = true;
+
+    assert(_id < ROBOT_MAX);
 
     // printf("move %u %u\n", _id, static_cast<uint32_t>(direction));
     robots_actions.push_back(
         {RobotAction::ActionType::move,
          {static_cast<uint8_t>(_id), static_cast<uint8_t>(direction)}});
+
+    return true;
   }
 
   void get() {
+    assert(_id < ROBOT_MAX);
     // printf("get %u\n", _id);
     robots_actions.push_back(
         {RobotAction::ActionType::get, {static_cast<uint8_t>(_id), 0}});
   }
   void pull() {
+    int bid = Map::getBerthId(_x, _y);
+    assert(bid != -1);
+    assert(berths[bid]._cargo_ongoing > 0);
+    berths[bid]._cargo_ongoing--;
+    berths[bid]._cargoIds.push_back(_carry_cargo_id);
+    _carry_cargo_id = -1;
+
     // printf("pull %u\n", _id);
+    assert(_id < ROBOT_MAX);
     robots_actions.push_back(
         {RobotAction::ActionType::pull, {static_cast<uint8_t>(_id), 0}});
   }
 };
 
 std::array<Robot, ROBOT_MAX> robots;
+
+uint32_t isThereARobot(uint32_t x, uint32_t y) {
+  auto p = std::find_if(begin(robots), end(robots), [x, y](const Robot &rob) {
+    return rob._x == x and rob._y == y;
+  });
+  if (p != end(robots))
+    return p->_id;
+  return -1;
+}
+
+// return true if rob[rid] can move away , false if rob[rid] is already moved or
+// no way to move.
+bool getOutOfMyWay(std::vector<uint8_t> &boss, uint32_t rid) {
+  if (robots[rid]._already_moved) {
+    boss.pop_back();
+    return false;
+  }
+  const auto &dirs = getRandomDir();
+  const auto x = robots[rid]._x, y = robots[rid]._y;
+
+  std::vector<uint8_t> blocked_robs;
+
+  for (auto &&dir : dirs) {
+    if (Direction::none == static_cast<Direction>(dir))
+      continue;
+    auto dx = x + Map::_sdir[dir][0], dy = y + Map::_sdir[dir][1];
+    if (not Map::isMoveAble(dx, dy))
+      continue;
+    int resid = isThereARobot(dx, dy);
+    if (resid == -1) { // 没有机器人,可以走
+      boss.pop_back();
+      return robots[rid].move(
+          static_cast<Direction>(dir)); // should always be true
+    } else if (std::find(boss.begin(), boss.end(), resid) == boss.end())
+      blocked_robs.push_back(resid);
+  }
+  for (auto bid : blocked_robs) {
+    boss.push_back(rid);
+    bool flag = getOutOfMyWay(boss, bid);
+    if (flag) {
+      boss.pop_back();
+      return true;
+    }
+  }
+  boss.pop_back();
+  return false;
+}
 
 class Cargo {
 public:
@@ -642,6 +762,7 @@ void initialization() {
     berths[id]._y = y;
     berths[id]._time = time;
     berths[id]._velocity = velocity;
+    berths[id]._cargo_ongoing = 0;
 
     Map::processConnectedBerth(id);
   }
@@ -663,7 +784,7 @@ uint32_t frameInput() {
   // 表示帧序号(从 1 开始递增) 、当前金钱数
   scanf("%u %lu", &frame_id, &money);
 
-  assert(frame_id == frame_current);
+  // assert(frame_id == frame_current);
 
   uint32_t K;
   // 场上新增货物的数量 K
@@ -679,6 +800,8 @@ uint32_t frameInput() {
                       frame_id + FRAME_CARGO_REMAIN, false});
     // cargos_pq.push(cargos.back());
     cargo_pqs.push_back(cargos.back());
+    auto [dis, bid] = Map::nearestBerth(x, y);
+    berths[bid]._cargo_ongoing++;
   }
 
   for (uint8_t id = 0; id < ROBOT_MAX; ++id) {
@@ -690,6 +813,7 @@ uint32_t frameInput() {
     robots[id]._id = id;
     robots[id]._x = x;
     robots[id]._y = y;
+    robots[id]._already_moved = false;
 
     if (not Map::isConnected(x, y))
       robots[id]._status = Robot::Status::useless;
@@ -710,6 +834,9 @@ uint32_t frameInput() {
     ships[id]._id = id;
     ships[id]._status = static_cast<Ship::Status>(status);
     ships[id]._berth_id = berth_id;
+    if (status == 1 and berth_id == -1) {
+      ships[id]._size = 0;
+    }
   }
 
   char okk[32];
@@ -726,7 +853,8 @@ public:
   CargoRobotDispatcher() {
     for (uint32_t i = 0; i < ROBOT_MAX; ++i) {
       const auto &rob = robots[i];
-      if (rob._carry_cargo_id != -1 or rob._status != Robot::Status::normal)
+      if (rob._carry_cargo_id != static_cast<uint32_t>(-1) or
+          rob._status != Robot::Status::normal)
         _unavaiable_robs.insert(i);
     }
   }
@@ -737,16 +865,19 @@ public:
   }
 
   uint32_t dispatch(uint32_t cargo_id, uint32_t bestof = 3) {
+    if (cargos[cargo_id]._taken)
+      return -1;
     std::vector<std::pair<uint32_t, uint32_t>> res; // {distance, robot_id}
     const auto &manh_robs = CargoPqItem::manhattanRobots(cargo_id);
     for (uint32_t i = 0; i < bestof and i < manh_robs.size(); ++i) {
       const auto rid = manh_robs[i].second;
-      if (manh_robs[i].first == 0) {
+      if (manh_robs[i].first == 0) { // 直接到达
         res.push_back({0, rid});
         _robs_act[{rid, cargo_id}] = Direction::none;
         break;
       }
-      if (_unavaiable_robs.count(rid))
+      if (_unavaiable_robs.count(
+              rid)) // Robot already carry cargo or not available
         continue;
       auto &&astar =
           Map::aStarSearch({robots[rid]._x, robots[rid]._y},
@@ -771,6 +902,7 @@ public:
 };
 
 void frameUpdate() {
+  TimeCounter _tc{__FUNCTION__};
   std::sort(rbegin(cargo_pqs), rend(cargo_pqs));
 
   while (not cargo_pqs.empty()) {
@@ -794,16 +926,19 @@ void frameUpdate() {
       continue;
     if (cargo._disappear_frame <= getCurrentFrame())
       continue;
-    auto rob_id = dispatcher.dispatch(cargo._id);
-    if (rob_id != -1) {
-      avaiable_rots--;
-    }
+    int rob_id = dispatcher.dispatch(cargo._id);
+    if (rob_id == -1)
+      continue;
+
+    avaiable_rots--;
     auto &rob = robots[rob_id];
     // let rob_id goto cargo._id
     auto dir = dispatcher.getDirection(rob_id, cargo._id);
     if (dir == Direction::none) {
+      // std::cerr << rob_id << std::endl;
       rob.get();
       rob._carry_cargo_id = cargo._id;
+      cargos[cargo._id]._taken = true; // 写法不够优雅
     } else {
       rob.move(dir); // ! 碰撞避免 not done
     }
@@ -813,13 +948,59 @@ void frameUpdate() {
   for (auto &&rob : robots) {
     if (rob._status != Robot::Status::normal)
       continue;
-    if (rob._carry_cargo_id == -1) // without cargo
+    if (rob._carry_cargo_id == static_cast<uint32_t>(-1)) // without cargo
       continue;
+    auto [dis, bid] = Map::nearestBerth(rob._x, rob._y);
+    if (dis == 0) {
+      rob.pull();
+    } else {
+      auto &&dirs =
+          Map::aStarSearch({rob._x, rob._y}, {berths[bid]._x, berths[bid]._y});
+      auto dir = dirs.front();
+      rob.move(dir);
+    }
+  }
+
+  std::vector<std::pair<uint32_t, uint32_t>> berth_pqs;
+  for (auto &&b : berths) {
+    // the back one is the current one
+    std::sort(std::rbegin(b._shipIds), rend(b._shipIds));
+    berth_pqs.push_back({b._cargo_ongoing, b._id});
+  }
+
+  std::sort(begin(berth_pqs), end(berth_pqs));
+
+  // Ship action
+  for (auto &&sh : ships) {
+    if (sh._status != Ship::Status::normal)
+      continue;
+    if (sh._berth_id == -1) {
+      auto [_, bid] = berth_pqs.back();
+      sh.ship(bid);
+      berths[bid]._shipIds.push_back(
+          {getCurrentFrame() + berths[bid]._time, sh._id});
+      ;
+    } else { // 装船
+      auto &&bert = berths[sh._berth_id];
+      while (not bert._cargoIds.empty()) {
+        if (sh._size < Ship::capacity) {
+          bert._cargoIds.pop_front();
+          sh._size++;
+        } else {
+          break;
+        }
+      }
+    }
+
+    if (sh._size == Ship::capacity) { // 发船
+      sh.go();
+    }
   }
 }
 
 void frameOutput() {
   for (auto &&action : robots_actions) {
+    assert(action._param[0] < ROBOT_MAX);
     switch (action._action) {
     case RobotAction::ActionType::move:
       printf("move %u %u\n", action._param[0], action._param[1]);
@@ -864,8 +1045,7 @@ int main() {
 
 #ifdef DEBUG
   {
-    auto p =
-        freopen("/home/delta/workspace/huawei2024/maps/map1.txt", "r", stdin);
+    auto p = freopen(debugPath, "r", stdin);
     assert(p);
     *p = *p;
   }
