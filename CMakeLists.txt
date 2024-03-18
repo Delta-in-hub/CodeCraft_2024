@@ -14,3 +14,5 @@ endif (!WIN32)
 # AUX_SOURCE_DIRECTORY(. src)
 file(GLOB SRC_FILES "*.cpp")
 ADD_EXECUTABLE(main ${SRC_FILES})
+
+target_compile_definitions(main PRIVATE NDEBUG)  # 设置预定义宏MY_DEFINE

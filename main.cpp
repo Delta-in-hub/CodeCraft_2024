@@ -1078,11 +1078,21 @@ void frameUpdate() {
         sh._free_frame = 0;
 
       if (sh._size == Ship::capacity or
-          getCurrentFrame() + bert._time >= FRAME_MAX or
-          sh._free_frame > bert._time * 2) { // 发船
+          getCurrentFrame() + bert._time + 1 >= FRAME_MAX) { // 发船
         sh.go();
         assert(bert._shipIds.front().second == sh._id);
         bert._shipIds.pop_front();
+      } else if (sh._free_frame > 25) {
+        if (bert._time * 2 < FRAME_SHIP_SWITH_FROM_BERTH) { // 回虚拟点
+          sh.go();
+          assert(bert._shipIds.front().second == sh._id);
+          bert._shipIds.pop_front();
+        } else { // 转港口
+          int bid = rand() % BERTH_MAX;
+          sh.ship(bid);
+          berths[bid]._shipIds.push_back(
+              {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, sh._id});
+        }
       }
     }
   }
