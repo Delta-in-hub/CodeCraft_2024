@@ -579,13 +579,13 @@ public:
     if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
       return lhs_remain_frame < rhs_remain_frame;
 
-    const auto &[lhs_nb_dis, lhs_nb_id] =
+    const auto [lhs_nb_dis, lhs_nb_id] =
         Map::nearestBerth(lhs_cargo._x, lhs_cargo._y);
-    const auto &[rhs_nb_dis, rhs_nb_id] =
+    const auto [rhs_nb_dis, rhs_nb_id] =
         Map::nearestBerth(rhs_cargo._x, rhs_cargo._y);
 
-    float lhs_avg_rob = averageManhattanRob(lhs_cargo._id);
-    float rhs_avg_rob = averageManhattanRob(rhs_cargo._id);
+    const float lhs_avg_rob = averageManhattanRob(lhs_cargo._id);
+    const float rhs_avg_rob = averageManhattanRob(rhs_cargo._id);
 
     lhs_remain_frame -= (lhs_nb_dis + lhs_avg_rob);
     rhs_remain_frame -= (rhs_nb_dis + rhs_avg_rob);
@@ -593,11 +593,11 @@ public:
     if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
       return lhs_remain_frame < rhs_remain_frame;
 
-    const auto lhs_price = lhs_cargo._price;
-    const auto rhs_price = rhs_cargo._price;
+    const float lhs_price = lhs_cargo._price;
+    const float rhs_price = rhs_cargo._price;
 
-    float lhs_score = lhs_price / (lhs_nb_dis + lhs_avg_rob);
-    float rhs_score = rhs_price / (rhs_nb_dis + rhs_avg_rob);
+    const float lhs_score = lhs_price / (lhs_nb_dis + lhs_avg_rob);
+    const float rhs_score = rhs_price / (rhs_nb_dis + rhs_avg_rob);
 
     return lhs_score < rhs_score;
   }
