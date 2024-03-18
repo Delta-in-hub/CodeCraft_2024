@@ -65,11 +65,13 @@ public:
   }
 
   ~TimeCounter() {
+#ifndef NDEBUG
     auto end = std::chrono::high_resolution_clock::now();
     auto duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    if (duration > std::chrono::milliseconds(5))
-      std::cerr << funcname << " Elapsed time: " << duration.count() << " ms\n";
+    // if (duration > std::chrono::milliseconds(5))
+    std::cerr << funcname << " Elapsed time: " << duration.count() << " ms\n";
+#endif
   }
 
 private:
@@ -490,6 +492,8 @@ public:
 
   uint32_t _size;
 
+  uint32_t _free_frame; // 有多少frame , 该船没有装货物了
+
   void ship(uint32_t berth_target_id) {
     // printf("ship %u %u\n", _id, berth_id);
     assert(berth_target_id < BERTH_MAX);
@@ -836,6 +840,7 @@ uint32_t frameInput() {
     ships[id]._berth_id = berth_id;
     if (status == 1 and berth_id == -1) {
       ships[id]._size = 0;
+      ships[id]._free_frame = 0;
     }
   }
 
@@ -901,6 +906,70 @@ public:
   }
 };
 
+class BerthPqItem {
+public:
+  uint32_t _bid;
+  uint32_t _tillu;
+
+  BerthPqItem(uint32_t bid) : _bid(bid) {
+    const auto &lhs = berths[_bid];
+    const auto lhs_wait_ships = lhs._shipIds.size();
+
+    auto lhs_cap = Ship::capacity * lhs_wait_ships;
+    if (lhs_wait_ships > 0) {
+      auto sh_nid = lhs._shipIds.front().second;
+      lhs_cap -= ships[sh_nid]._size;
+    }
+
+    _tillu = lhs_cap / lhs._velocity;
+  }
+
+  bool operator<(const BerthPqItem &rhsitem) const {
+    const auto &lhs = berths[_bid];
+    const auto &rhs = berths[rhsitem._bid];
+
+    const auto lhs_wait_ships = lhs._shipIds.size();
+    const auto rhs_wait_ships = rhs._shipIds.size();
+
+    auto lhs_cap = Ship::capacity * lhs_wait_ships;
+    if (lhs_wait_ships > 0) {
+      auto sh_nid = lhs._shipIds.front().second;
+      lhs_cap -= ships[sh_nid]._size;
+    }
+
+    auto rhs_cap = Ship::capacity * rhs_wait_ships;
+    if (rhs_wait_ships > 0) {
+      auto sh_nid = rhs._shipIds.front().second;
+      rhs_cap -= ships[sh_nid]._size;
+    }
+
+    const auto lhs_cargo_num = lhs._cargo_ongoing + lhs._cargoIds.size();
+    const auto rhs_cargo_num = rhs._cargo_ongoing + rhs._cargoIds.size();
+
+    const auto lhs_timecost = lhs._time;
+    const auto rhs_timecost = rhs._time;
+
+    const auto lhs_untilme = lhs_cap / lhs._velocity;
+    const auto rhs_untilme = rhs_cap / rhs._velocity;
+
+    int lhs_wait_frame = lhs_untilme - lhs_timecost;
+    int rhs_wait_frame = rhs_untilme - rhs_timecost;
+
+    const float lhs_remain_cargos = lhs_cargo_num - lhs_cap;
+    const float rhs_remain_cargos = rhs_cargo_num - rhs_cap;
+
+    const float lhs_score =
+        lhs_remain_cargos /
+        (lhs_wait_frame + (lhs_remain_cargos) / lhs._velocity + lhs._time);
+
+    const float rhs_score =
+        rhs_remain_cargos /
+        (rhs_wait_frame + (rhs_remain_cargos) / rhs._velocity + rhs._time);
+
+    return lhs_score < rhs_score; // ! maybe BUG BUG here
+  }
+};
+
 void frameUpdate() {
   TimeCounter _tc{__FUNCTION__};
   std::sort(rbegin(cargo_pqs), rend(cargo_pqs));
@@ -940,7 +1009,7 @@ void frameUpdate() {
       rob._carry_cargo_id = cargo._id;
       cargos[cargo._id]._taken = true; // 写法不够优雅
     } else {
-      rob.move(dir); // ! 碰撞避免 not done
+      rob.move(dir);
     }
   }
 
@@ -961,11 +1030,12 @@ void frameUpdate() {
     }
   }
 
-  std::vector<std::pair<uint32_t, uint32_t>> berth_pqs;
+  std::vector<BerthPqItem> berth_pqs;
+
   for (auto &&b : berths) {
     // the back one is the current one
     std::sort(std::rbegin(b._shipIds), rend(b._shipIds));
-    berth_pqs.push_back({b._cargo_ongoing, b._id});
+    berth_pqs.emplace_back(b._id);
   }
 
   std::sort(begin(berth_pqs), end(berth_pqs));
@@ -974,26 +1044,46 @@ void frameUpdate() {
   for (auto &&sh : ships) {
     if (sh._status != Ship::Status::normal)
       continue;
-    if (sh._berth_id == -1) {
-      auto [_, bid] = berth_pqs.back();
-      sh.ship(bid);
-      berths[bid]._shipIds.push_back(
-          {getCurrentFrame() + berths[bid]._time, sh._id});
-      ;
-    } else { // 装船
+    if (sh._berth_id == -1) { // 处于虚拟点
+      if (berth_pqs.empty())
+        continue;
+      auto bid = berth_pqs.back()._bid;
+      auto tillu = berth_pqs.back()._tillu;
+      const auto &bert = berths[bid];
+
+      if (tillu <= bert._time) {
+        sh.ship(bid);
+        berths[bid]._shipIds.push_back(
+            {getCurrentFrame() + berths[bid]._time, sh._id});
+      }
+
+      berth_pqs.pop_back();
+
+    } else { // 处于泊位
+
       auto &&bert = berths[sh._berth_id];
-      while (not bert._cargoIds.empty()) {
+      uint32_t onoboard = 0;
+      while (not bert._cargoIds.empty() and onoboard < bert._velocity) {
         if (sh._size < Ship::capacity) {
           bert._cargoIds.pop_front();
           sh._size++;
+          onoboard++;
         } else {
           break;
         }
       }
-    }
+      if (onoboard == 0)
+        sh._free_frame++;
+      else
+        sh._free_frame = 0;
 
-    if (sh._size == Ship::capacity) { // 发船
-      sh.go();
+      if (sh._size == Ship::capacity or
+          getCurrentFrame() + bert._time >= FRAME_MAX or
+          sh._free_frame > bert._time * 2) { // 发船
+        sh.go();
+        assert(bert._shipIds.front().second == sh._id);
+        bert._shipIds.pop_front();
+      }
     }
   }
 }
