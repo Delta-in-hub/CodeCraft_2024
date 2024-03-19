@@ -12,7 +12,7 @@ run: bin
 	LinuxReleasev1.2/PreliminaryJudge build/main -m maps/map1.txt
 
 clean:
-	rm -rf build/main
+	rm -rf build/main *.zip
 
 test: debug
 	LinuxReleasev1.2/PreliminaryJudge build/main -m maps/map1.txt

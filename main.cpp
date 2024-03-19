@@ -564,6 +564,10 @@ public:
 
   bool _already_moved;
 
+  bool isWithCargo() const {
+    return _carry_cargo_id != static_cast<uint32_t>(-1);
+  }
+
   bool move(Direction direction) {
     if (direction == Direction::none or _already_moved)
       return false;
@@ -893,8 +897,7 @@ public:
   CargoRobotDispatcher() {
     for (uint32_t i = 0; i < ROBOT_MAX; ++i) {
       const auto &rob = robots[i];
-      if (rob._carry_cargo_id != static_cast<uint32_t>(-1) or
-          rob._status != Robot::Status::normal)
+      if (rob.isWithCargo() or rob._status != Robot::Status::normal)
         _unavaiable_robs.insert(i);
     }
   }
@@ -1024,15 +1027,20 @@ void frameUpdate() {
   CargoRobotDispatcher dispatcher;
   int avaiable_rots = dispatcher.countAvaiableRobots();
 
+  std::vector<CargoPqItem> cargos_tmp;
+
   while (not cargos_pq.empty() and avaiable_rots > 0) {
     // for (uint32_t i = 0; i < cargo_pqs.size() and avaiable_rots > 0; ++i) {
     // const auto &cargo = cargos[cargo_pqs[i]._id];
-    const auto &cargo = cargos[cargos_pq.top()._id];
+    const auto cargoitem = cargos_pq.top();
     cargos_pq.pop();
+
+    const auto &cargo = cargos[cargoitem._id];
     if (cargo._taken)
       continue;
     if (cargo._disappear_frame <= getCurrentFrame())
       continue;
+    cargos_tmp.push_back(cargoitem);
     int rob_id = dispatcher.dispatch(cargo._id);
     if (rob_id == -1)
       continue;
@@ -1042,6 +1050,7 @@ void frameUpdate() {
     // let rob_id goto cargo._id
     auto dir = dispatcher.getDirection(rob_id, cargo._id);
     if (dir == Direction::none) {
+      cargos_tmp.pop_back();
       // std::cerr << rob_id << std::endl;
       rob.get();
       rob._carry_cargo_id = cargo._id;
@@ -1051,11 +1060,15 @@ void frameUpdate() {
     }
   }
 
+  for (auto &&item : cargos_tmp) {
+    cargos_pq.push(item);
+  }
+
   // Now let robots which is with cargo moving
   for (auto &&rob : robots) {
     if (rob._status != Robot::Status::normal)
       continue;
-    if (rob._carry_cargo_id == static_cast<uint32_t>(-1)) // without cargo
+    if (not rob.isWithCargo())
       continue;
     auto [dis, bid] = Map::nearestBerth(rob._x, rob._y);
     if (dis == 0) {
@@ -1121,10 +1134,10 @@ void frameUpdate() {
         assert(bert._shipIds.front().second == sh._id);
         bert._shipIds.pop_front();
       } else if (sh._free_frame > 25) {
+        bert._shipIds.pop_front();
         if (bert._time * 2 < FRAME_SHIP_SWITH_FROM_BERTH) { // 回虚拟点
           sh.go();
           assert(bert._shipIds.front().second == sh._id);
-          bert._shipIds.pop_front();
         } else { // 转港口
           int bid = rand() % BERTH_MAX;
           sh.ship(bid);
