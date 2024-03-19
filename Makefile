@@ -8,14 +8,20 @@ bin: main.cpp
 debug: main.cpp
 	g++ -o build/main *.cpp -std=c++17 -g -Og -Wall -Wextra -Werror
 
+ifeq ($(1),)
+  ARG1 = "maps/map1.txt"
+else
+  ARG1 = $(1)
+endif
+
 run: bin
-	LinuxReleasev1.2/PreliminaryJudge build/main -m maps/map1.txt
+	LinuxReleasev1.2/PreliminaryJudge build/main -m $(ARG1)
 
 clean:
 	rm -rf build/main *.zip
 
 test: debug
-	LinuxReleasev1.2/PreliminaryJudge build/main -m maps/map1.txt
+	LinuxReleasev1.2/PreliminaryJudge build/main -m $(ARG1)
 
 replay:
 	xdg-open LinuxReleasev1.2/replayer/
