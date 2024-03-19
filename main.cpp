@@ -239,7 +239,7 @@ public:
   */
 
   static bool isMoveAble(uint32_t x, uint32_t y) {
-    if (x >= MAP_X_AXIS_MAX or y >= MAP_Y_AXIS_MAX)
+    if (unlikely(x >= MAP_X_AXIS_MAX or y >= MAP_Y_AXIS_MAX))
       return false;
     switch (_grids[x][y]._type) {
     case Type::berth:
@@ -304,7 +304,7 @@ public:
 
   // return berth_id, -1 if {x,y} is not a berth
   static int getBerthId(uint32_t x, uint32_t y) {
-    if (_grids[x][y]._type == Type::berth)
+    if (likely(_grids[x][y]._type == Type::berth))
       return _grids[x][y]._berth_id;
     return -1;
   }
@@ -366,7 +366,6 @@ public:
     case Type::space: {
       const auto &arr = grid._dis;
       return std::count_if(std::begin(arr), std::end(arr), [](uint16_t i) {
-        assert(i <= MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX);
         return i != static_cast<uint16_t>(-1);
       });
       break;
@@ -527,13 +526,13 @@ public:
 
     inQueue[from.first][from.second] = true;
 
-    while (not pq.empty()) {
+    while (likely(not pq.empty())) {
       auto [x, y, step] = pq.top();
       pq.pop();
 
       assert(inQueue[x][y]);
 
-      if (x == to.first and y == to.second) {
+      if (unlikely(x == to.first and y == to.second)) {
         // backtrack
         uint32_t cnt = 0;
         Direction last = Direction::none;
@@ -581,7 +580,7 @@ public:
   getBerthPosition(uint32_t bid, bool random = false) {
     assert(bid < BERTH_MAX);
     const auto &bert = berths[bid];
-    if (not random)
+    if (unlikely(not random))
       return {bert._x, bert._y};
 
     const int xalias = getRandom(0, 3);
@@ -791,8 +790,8 @@ public:
   uint32_t distanceToRobot(uint32_t rid) const {
     const auto &cargo = cargos[_id];
     const auto &robo = robots[rid];
-    if (not Map::isConnected({cargo._origin_x, cargo._origin_y},
-                             {robo._x, robo._y}))
+    if (unlikely(not Map::isConnected({cargo._origin_x, cargo._origin_y},
+                                      {robo._x, robo._y})))
       return -1;
     if (robo.isWithCargo()) {
       const auto &withcargo = cargos[robo._carry_cargo_id];
@@ -813,7 +812,7 @@ public:
     std::vector<std::pair<uint32_t, uint32_t>> ret;
     auto cx = cargos[_id]._origin_x, cy = cargos[_id]._origin_y;
     for (auto &&robot : robots) {
-      if (robot._status == Robot::Status::useless)
+      if (unlikely(robot._status == Robot::Status::useless))
         continue;
       auto dis = this->distanceToRobot(robot._id);
       ret.push_back({dis, robot._id});
@@ -826,7 +825,7 @@ public:
   // {distance , robot id}
   std::pair<uint32_t, uint32_t> nearestRobot() const {
     const auto &diss = this->distToRobots(false);
-    if (diss.empty())
+    if (unlikely(diss.empty()))
       return {-1, -1};
     const auto p = std::min_element(begin(diss), end(diss));
     return *p;
@@ -840,7 +839,7 @@ public:
       const auto [manh, _] = rs[cnt];
       manh_sum += manh;
     }
-    if (cnt == 0)
+    if (unlikely(cnt == 0))
       return std::numeric_limits<float>::max();
     return static_cast<float>(manh_sum) / cnt;
   }
@@ -854,7 +853,7 @@ public:
 
     const int lhs_flag = lhs_cargo._taken ? 1 : 0;
     const int rhs_flag = rhs_cargo._taken ? 1 : 0;
-    if (lhs_flag or rhs_flag)
+    if (unlikely(lhs_flag or rhs_flag))
       return lhs_flag > rhs_flag;
 
     int32_t lhs_remain_frame = lhs_cargo._disappear_frame - getCurrentFrame();
@@ -957,7 +956,7 @@ uint32_t frameInput() {
     uint32_t x, y, price;
     // 货物的位置坐标、金额
     scanf("%u %u %u", &x, &y, &price);
-    if (not Map::isConnectedToAnyBerth(x, y)) // 货物在封闭区域,忽略之
+    if (unlikely(not Map::isConnectedToAnyBerth(x, y))) // 货物在封闭区域,忽略之
       continue;
 
     cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price,
@@ -980,7 +979,7 @@ uint32_t frameInput() {
     robots[id]._y = y;
     // robots[id]._already_moved = false;
 
-    if (not Map::isConnectedToAnyBerth(x, y))
+    if (unlikely(not Map::isConnectedToAnyBerth(x, y)))
       robots[id]._status = Robot::Status::useless;
     else
       robots[id]._status = static_cast<Robot::Status>(status);
