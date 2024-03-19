@@ -568,6 +568,10 @@ public:
     return _carry_cargo_id != static_cast<uint32_t>(-1);
   }
 
+  bool isInBerth() const {
+    return Map::_grids[_x][_y]._type == Map::Type::berth;
+  }
+
   bool move(Direction direction) {
     if (direction == Direction::none or _already_moved)
       return false;
@@ -1070,6 +1074,9 @@ void frameUpdate() {
       continue;
     if (not rob.isWithCargo())
       continue;
+    if (rob.isInBerth()) {
+      rob.pull();
+    }
     auto [dis, bid] = Map::nearestBerth(rob._x, rob._y);
     if (dis == 0) {
       rob.pull();
