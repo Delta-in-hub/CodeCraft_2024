@@ -11,7 +11,6 @@
 #include <limits>
 #include <map>
 #include <memory>
-#include <numeric>
 #include <queue>
 #include <random>
 #include <tuple>
@@ -83,7 +82,7 @@ public:
     auto end = std::chrono::high_resolution_clock::now();
     auto duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    // if (duration > std::chrono::milliseconds(5))
+    // if (duration >= std::chrono::milliseconds(1))
     std::cerr << funcname << " Elapsed time: " << duration.count() << " ms\n";
 #endif
   }
@@ -116,16 +115,52 @@ public:
 std::vector<RobotAction> robots_actions;
 std::vector<ShipAction> ships_actions;
 
+// Order is important!
+class Cargo {
+public:
+  uint32_t _id;
+  uint32_t _origin_x, _origin_y;
+  uint32_t _price; // 货物的价值
+  uint32_t _disappear_frame;
+  bool _taken;        // 已经被机器人拿起
+  uint32_t _berth_id; // 距离最近的港口id
+
+  bool isAvailable() const {
+    if (getCurrentFrame() >= _disappear_frame and not _taken)
+      return false;
+    return true;
+  }
+};
+std::vector<Cargo> cargos;
+
 class Berth {
 public:
   uint32_t _id;
   uint32_t _x, _y;
   uint32_t _time;     // 该泊位轮船运输到虚拟点的时间
   uint32_t _velocity; // 该泊位的装载速度
-  uint32_t _cargo_ongoing;
+  // uint32_t _cargo_ongoing;
   std::deque<std::pair<uint32_t, uint32_t>>
-      _shipIds; // 该泊位的船只编号; {arrive_frame,ship id}
-  std::deque<uint32_t> _cargoIds; // 该泊位的货物编号;
+      _ships_here; // 该泊位的船只; {arrive_frame,ship id}
+  std::deque<std::pair<uint32_t, uint32_t>>
+      _cargos_here; // 该泊位的货物; {price , cargo id}
+  uint32_t countShipsNow() const {
+    auto ret = std::count_if(begin(_ships_here), end(_ships_here),
+                             [](const std::pair<uint32_t, uint32_t> p) {
+                               return getCurrentFrame() >= p.first;
+                             });
+    return ret;
+  }
+  uint32_t countShips() const { return _ships_here.size(); }
+  uint32_t countCargosNow() const { return _cargos_here.size(); }
+  uint32_t sumCargosValueNow() const {
+    uint32_t ret = std::accumulate(
+        begin(_cargos_here), end(_cargos_here), 0,
+        [](uint32_t sum, const std::pair<uint32_t, uint32_t> p) {
+          return sum + p.first;
+        });
+    return ret;
+  }
 };
 std::array<Berth, BERTH_MAX> berths;
 
@@ -275,7 +310,7 @@ public:
   }
 
   // is connected to any berth
-  static bool isConnected(uint32_t x, uint32_t y) {
+  static bool isConnectedToAnyBerth(uint32_t x, uint32_t y) {
     switch (_grids[x][y]._type) {
     case Type::space: {
       const auto &arr = _grids[x][y]._dis;
@@ -291,7 +326,8 @@ public:
     }
   }
 
-  static bool isConnectedTo(uint32_t x, uint32_t y, uint32_t berth_id) {
+  // Does {x,y} is connected to berth[id]
+  static bool isConnectedToBerth(uint32_t x, uint32_t y, uint32_t berth_id) {
     switch (_grids[x][y]._type) {
     case Type::space: {
       const auto &arr = _grids[x][y]._dis;
@@ -310,7 +346,7 @@ public:
           auto ny = y + j;
           if (not isMoveAble(nx, ny) or _grids[nx][ny]._type == Type::berth)
             continue;
-          if (isConnectedTo(nx, ny, berth_id))
+          if (isConnectedToBerth(nx, ny, berth_id))
             return true;
         }
       }
@@ -339,6 +375,36 @@ public:
       break;
     }
     return 0;
+  }
+
+  static uint32_t getDistanceToBerth(uint32_t x, uint32_t y, uint32_t bid) {
+    switch (_grids[x][y]._type) {
+    case Map::Type::space:
+      return _grids[x][y]._dis[bid];
+    case Map::Type::berth: {
+      auto nowbid = Map::getBerthId(x, y);
+      if (nowbid == bid)
+        return 0;
+      else {
+        auto x = berths[nowbid]._x;
+        auto y = berths[nowbid]._y;
+        for (int i = -1; i <= 4; i++) {
+          for (int j = -1; j <= 4; j++) {
+            auto nx = x + i;
+            auto ny = y + j;
+            if (not isMoveAble(nx, ny) or _grids[nx][ny]._type == Type::berth)
+              continue;
+            auto ret = getDistanceToBerth(nx, ny, bid);
+            if (ret != -1)
+              return ret;
+          }
+        }
+        return -1;
+      }
+    }
+    default:
+      return -1;
+    }
   }
 
   // return Nearest Berth <distance,id>
@@ -381,8 +447,24 @@ public:
     return res;
   }
 
-  static uint32_t manhattanDistance(const std::pair<int, int> &a,
-                                    const std::pair<int, int> &b) {
+  // 判断两个格子是否连通
+  static bool isConnected(const std::pair<uint32_t, uint32_t> from,
+                          const std::pair<uint32_t, uint32_t> to) {
+    const auto [fx, fy] = from;
+    const auto [tx, ty] = to;
+    const auto &fdis = _grids[fx][fy]._dis;
+    const auto &tdis = _grids[tx][ty]._dis;
+    for (uint32_t i = 0; i < BERTH_MAX; i++) {
+      if (fdis[i] != static_cast<uint16_t>(-1) and
+          tdis[i] != static_cast<uint16_t>(-1)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static uint32_t manhattanDistance(const std::pair<int, int> a,
+                                    const std::pair<int, int> b) {
     return std::abs(a.first - b.first) + std::abs(a.second - b.second);
   }
 
@@ -403,16 +485,17 @@ public:
     而 h(n) 指的是从格子n到终点格子的估计代价。
     */
 
+    // sizeof(gridPqItem) == 8 , so pass by value
     struct gridPqItem {
-      uint32_t _x, _y;
+      uint16_t _x, _y;
       uint32_t _steps; // steps from start grid
 
       // For priority queue , the smaller one is in the front
-      bool operator<(const gridPqItem &rhs) const {
+      bool operator<(const gridPqItem rhs) const {
         return this->operator>(rhs);
       }
 
-      bool operator>(const gridPqItem &rhs) const {
+      bool operator>(const gridPqItem rhs) const {
 
         const auto lhs_g = _steps;
         const auto lhs_h = manhattanDistance({_x, _y}, _to);
@@ -430,11 +513,17 @@ public:
     memset(inQueue, 0, sizeof(inQueue));
 
     static Direction road[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
-    std::fill_n(std::addressof(road[0][0]), MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX,
-                Direction::none);
+    // std::fill_n(std::addressof(road[0][0]), MAP_X_AXIS_MAX * MAP_Y_AXIS_MAX,
+    //             Direction::none);
+
+    static_assert(
+        sizeof(Direction) == sizeof(char),
+        "sizeof(Direction) should equals to sizeof(char) to use memest");
+    memset(road, static_cast<int>(Direction::none), sizeof(road));
 
     std::priority_queue<gridPqItem> pq;
-    pq.push({from.first, from.second, 0});
+    pq.push({static_cast<uint16_t>(from.first),
+             static_cast<uint16_t>(from.second), 0});
 
     inQueue[from.first][from.second] = true;
 
@@ -452,13 +541,14 @@ public:
           int idx = static_cast<int>(road[x][y]);
           // pathd.push_back(reverse(road[x][y]));
           last = reverse(road[x][y]);
-          assert(road[x][y] != Direction::none);
-          assert(idx < 4);
+          // assert(road[x][y] != Direction::none);
+          // assert(idx < 4);
           x += _sdir[idx][0];
           y += _sdir[idx][1];
-          assert(isMoveAble(x, y));
+          // assert(isMoveAble(x, y));
           cnt++;
         }
+        assert(cnt == step);
         // step is the shortest path length
         // if (step != pathd.size()) {
         //   for (auto &&dir : pathd) {
@@ -471,13 +561,13 @@ public:
       }
 
       for (int i = 0; i < 4; i++) {
-        uint32_t nx = x + _sdir[i][0];
-        uint32_t ny = y + _sdir[i][1];
+        uint16_t nx = x + _sdir[i][0];
+        uint16_t ny = y + _sdir[i][1];
         if (isMoveAble(nx, ny) and not inQueue[nx][ny]) {
           assert(road[nx][ny] == Direction::none);
-          road[nx][ny] = reverse(static_cast<Direction>(i)); //! Maybe bug here
+          road[nx][ny] = reverse(static_cast<Direction>(i));
           pq.push({nx, ny, step + 1});
-          assert(inQueue[nx][ny] == false);
+          // assert(inQueue[nx][ny] == false);
           inQueue[nx][ny] = true;
         }
       }
@@ -525,7 +615,12 @@ public:
 
   uint32_t _size;
 
-  uint32_t _free_frame; // 有多少frame , 该船没有装货物了
+  uint32_t _free_frame; // 累计有多少frame , 该船没有装货物了
+
+  void clear() {
+    _size = 0;
+    _free_frame = 0;
+  }
 
   void ship(uint32_t berth_target_id) {
     // printf("ship %u %u\n", _id, berth_id);
@@ -560,9 +655,12 @@ public:
   } _status;
 
   uint32_t _carry_cargo_id; // -1 表示机器人尚未装货, 或则表示装着 [id] 货物
+
+  uint32_t _target_x, _target_y; // 目标点的坐标
+
   // uint32_t _target_cargo_id;
 
-  bool _already_moved;
+  // bool _already_moved;
 
   bool isWithCargo() const {
     return _carry_cargo_id != static_cast<uint32_t>(-1);
@@ -612,12 +710,16 @@ public:
     robots_actions.push_back(
         {RobotAction::ActionType::get, {static_cast<uint8_t>(_id), 0}});
   }
+
   void pull() {
     int bid = Map::getBerthId(_x, _y);
-    assert(bid != -1);
-    assert(berths[bid]._cargo_ongoing > 0);
-    berths[bid]._cargo_ongoing--;
-    berths[bid]._cargoIds.push_back(_carry_cargo_id);
+    if (bid == -1)
+      return;
+    if (not isWithCargo())
+      return;
+
+    berths[bid]._cargos_here.push_back(
+        {cargos[_carry_cargo_id]._price, _carry_cargo_id});
     _carry_cargo_id = -1;
 
     // printf("pull %u\n", _id);
@@ -676,16 +778,6 @@ bool getOutOfMyWay(std::vector<uint8_t> &boss, uint32_t rid) {
   return false;
 }
 
-class Cargo {
-public:
-  uint32_t _id;
-  uint32_t _x, _y;
-  uint32_t _price; // 货物的价值
-  uint32_t _disappear_frame;
-  bool _taken; // 被机器人已经拿起
-};
-std::vector<Cargo> cargos;
-
 class CargoPqItem {
 public:
   uint32_t _id;
@@ -694,41 +786,58 @@ public:
   CargoPqItem(const Cargo &cargo) : _id(cargo._id) {}
   CargoPqItem(const CargoPqItem &item) : _id(item._id) {}
 
-  // <manhattan,robotsid> if {sorted} is true, sorted by manhattan distance
-  static std::vector<std::pair<uint32_t, uint32_t>>
-  manhattanRobots(uint32_t cargo_id, bool sorted = true) {
+  // return the distance to robot, if robot with cargo ,return real distance ;
+  // else return manhattan distance
+  uint32_t distanceToRobot(uint32_t rid) const {
+    const auto &cargo = cargos[_id];
+    const auto &robo = robots[rid];
+    if (not Map::isConnected({cargo._origin_x, cargo._origin_y},
+                             {robo._x, robo._y}))
+      return -1;
+    if (robo.isWithCargo()) {
+      const auto &withcargo = cargos[robo._carry_cargo_id];
+      const auto robo_to_berth =
+          Map::getDistanceToBerth(robo._x, robo._y, withcargo._berth_id);
+      const auto berth_to_cargo = Map::getDistanceToBerth(
+          cargo._origin_x, cargo._origin_y, withcargo._berth_id);
+      return robo_to_berth + berth_to_cargo;
+    } else {
+      return Map::manhattanDistance({cargo._origin_x, cargo._origin_y},
+                                    {robo._x, robo._y});
+    }
+  }
+
+  // vector<distance,rid> , nearest first
+  std::vector<std::pair<uint32_t, uint32_t>>
+  distToRobots(bool sorted = true) const {
     std::vector<std::pair<uint32_t, uint32_t>> ret;
-    auto cx = cargos[cargo_id]._x, cy = cargos[cargo_id]._y;
+    auto cx = cargos[_id]._origin_x, cy = cargos[_id]._origin_y;
     for (auto &&robot : robots) {
-      if (robot._status == Robot::Status::useless or
-          robot._carry_cargo_id != static_cast<uint32_t>(-1))
+      if (robot._status == Robot::Status::useless)
         continue;
-      auto manha = Map::manhattanDistance({cx, cy}, {robot._x, robot._y});
-      ret.push_back({manha, robot._id});
+      auto dis = this->distanceToRobot(robot._id);
+      ret.push_back({dis, robot._id});
     }
     if (sorted)
       std::sort(begin(ret), end(ret));
     return ret;
   }
 
-  // <manhattan distance, robot id>
-  static std::pair<uint32_t, uint32_t>
-  nearestRobotByManhattan(uint32_t cargo_id) {
-    auto &&manha = CargoPqItem::manhattanRobots(cargo_id, false);
-    if (manha.empty())
+  // {distance , robot id}
+  std::pair<uint32_t, uint32_t> nearestRobot() const {
+    const auto &diss = this->distToRobots(false);
+    if (diss.empty())
       return {-1, -1};
-    const auto &p = std::min_element(begin(manha), end(manha));
+    const auto p = std::min_element(begin(diss), end(diss));
     return *p;
   }
 
-  static float averageManhattanRob(const uint32_t cargo_id,
-                                   uint32_t iter_max = 3) {
-    assert(cargo_id < cargos.size());
-    const auto &rs = manhattanRobots(cargo_id);
+  float avgDistToRobots(uint32_t iter_max = 3) const {
+    const auto &rs = this->distToRobots();
     uint32_t cnt = 0;
     uint32_t manh_sum = 0;
     for (; cnt < rs.size() and cnt < iter_max; ++cnt) {
-      const auto [manh, rid] = rs[cnt];
+      const auto [manh, _] = rs[cnt];
       manh_sum += manh;
     }
     if (cnt == 0)
@@ -753,13 +862,16 @@ public:
     if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
       return lhs_remain_frame < rhs_remain_frame;
 
-    const auto [lhs_nb_dis, lhs_nb_id] =
-        Map::nearestBerth(lhs_cargo._x, lhs_cargo._y);
-    const auto [rhs_nb_dis, rhs_nb_id] =
-        Map::nearestBerth(rhs_cargo._x, rhs_cargo._y);
+    const auto lhs_nb_id = lhs_cargo._berth_id;
+    const auto lhs_nb_dis = Map::getDistanceToBerth(
+        lhs_cargo._origin_x, lhs_cargo._origin_y, lhs_nb_id);
 
-    const float lhs_avg_rob = averageManhattanRob(lhs_cargo._id);
-    const float rhs_avg_rob = averageManhattanRob(rhs_cargo._id);
+    const auto rhs_nb_id = rhs_cargo._berth_id;
+    const auto rhs_nb_dis = Map::getDistanceToBerth(
+        rhs_cargo._origin_x, rhs_cargo._origin_y, rhs_nb_id);
+
+    const float lhs_avg_rob = this->avgDistToRobots();
+    const float rhs_avg_rob = rhs.avgDistToRobots();
 
     lhs_remain_frame -= (lhs_nb_dis + lhs_avg_rob);
     rhs_remain_frame -= (rhs_nb_dis + rhs_avg_rob);
@@ -770,8 +882,13 @@ public:
     const float lhs_price = lhs_cargo._price;
     const float rhs_price = rhs_cargo._price;
 
-    const float lhs_score = lhs_price / (lhs_nb_dis + lhs_avg_rob);
-    const float rhs_score = rhs_price / (rhs_nb_dis + rhs_avg_rob);
+    const auto lhs_nb_time = berths[lhs_nb_id]._time;
+    const auto rhs_nb_time = berths[rhs_nb_id]._time;
+
+    const float lhs_score =
+        lhs_price / (lhs_nb_dis + lhs_avg_rob + lhs_nb_time);
+    const float rhs_score =
+        rhs_price / (rhs_nb_dis + rhs_avg_rob + rhs_nb_time);
 
     return lhs_score < rhs_score;
   }
@@ -807,7 +924,7 @@ void initialization() {
     berths[id]._y = y;
     berths[id]._time = time;
     berths[id]._velocity = velocity;
-    berths[id]._cargo_ongoing = 0;
+    // berths[id]._cargo_ongoing = 0;
 
     Map::processConnectedBerth(id);
   }
@@ -840,15 +957,16 @@ uint32_t frameInput() {
     uint32_t x, y, price;
     // 货物的位置坐标、金额
     scanf("%u %u %u", &x, &y, &price);
-    if (not Map::isConnected(x, y)) // 货物在封闭区域,忽略之
+    if (not Map::isConnectedToAnyBerth(x, y)) // 货物在封闭区域,忽略之
       continue;
 
     cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price,
-                      frame_id + FRAME_CARGO_REMAIN, false});
+                      frame_id + FRAME_CARGO_REMAIN, false,
+                      static_cast<uint32_t>(0)});
+
+    cargos.back()._berth_id = Map::nearestBerth(x, y).second;
+
     cargos_pq.push(cargos.back());
-    // cargo_pqs.push_back(cargos.back());
-    auto [dis, bid] = Map::nearestBerth(x, y);
-    berths[bid]._cargo_ongoing++;
   }
 
   for (uint8_t id = 0; id < ROBOT_MAX; ++id) {
@@ -860,9 +978,9 @@ uint32_t frameInput() {
     robots[id]._id = id;
     robots[id]._x = x;
     robots[id]._y = y;
-    robots[id]._already_moved = false;
+    // robots[id]._already_moved = false;
 
-    if (not Map::isConnected(x, y))
+    if (not Map::isConnectedToAnyBerth(x, y))
       robots[id]._status = Robot::Status::useless;
     else
       robots[id]._status = static_cast<Robot::Status>(status);
@@ -882,8 +1000,7 @@ uint32_t frameInput() {
     ships[id]._status = static_cast<Ship::Status>(status);
     ships[id]._berth_id = berth_id;
     if (status == 1 and berth_id == -1) {
-      ships[id]._size = 0;
-      ships[id]._free_frame = 0;
+      ships[id].clear();
     }
   }
 
@@ -926,9 +1043,9 @@ public:
       if (_unavaiable_robs.count(
               rid)) // Robot already carry cargo or not available
         continue;
-      auto &&astar =
-          Map::aStarSearch({robots[rid]._x, robots[rid]._y},
-                           {cargos[cargo_id]._x, cargos[cargo_id]._y});
+      auto &&astar = Map::aStarSearch(
+          {robots[rid]._x, robots[rid]._y},
+          {cargos[cargo_id]._origin_x, cargos[cargo_id]._origin_y});
       res.push_back({astar.second, rid});
       _robs_act[{rid, cargo_id}] = astar.first;
     }
@@ -955,11 +1072,11 @@ public:
 
   BerthPqItem(uint32_t bid) : _bid(bid) {
     const auto &lhs = berths[_bid];
-    const auto lhs_wait_ships = lhs._shipIds.size();
+    const auto lhs_wait_ships = lhs._ships_here.size();
 
     auto lhs_cap = Ship::capacity * lhs_wait_ships;
     if (lhs_wait_ships > 0) {
-      auto sh_nid = lhs._shipIds.front().second;
+      auto sh_nid = lhs._ships_here.front().second;
       lhs_cap -= ships[sh_nid]._size;
     }
 
@@ -970,63 +1087,12 @@ public:
     const auto &lhs = berths[_bid];
     const auto &rhs = berths[rhsitem._bid];
 
-    const auto lhs_wait_ships = lhs._shipIds.size();
-    const auto rhs_wait_ships = rhs._shipIds.size();
-
-    auto lhs_cap = Ship::capacity * lhs_wait_ships;
-    if (lhs_wait_ships > 0) {
-      auto sh_nid = lhs._shipIds.front().second;
-      lhs_cap -= ships[sh_nid]._size;
-    }
-
-    auto rhs_cap = Ship::capacity * rhs_wait_ships;
-    if (rhs_wait_ships > 0) {
-      auto sh_nid = rhs._shipIds.front().second;
-      rhs_cap -= ships[sh_nid]._size;
-    }
-
-    const auto lhs_cargo_num = lhs._cargo_ongoing + lhs._cargoIds.size();
-    const auto rhs_cargo_num = rhs._cargo_ongoing + rhs._cargoIds.size();
-
-    const auto lhs_timecost = lhs._time;
-    const auto rhs_timecost = rhs._time;
-
-    const auto lhs_untilme = lhs_cap / lhs._velocity;
-    const auto rhs_untilme = rhs_cap / rhs._velocity;
-
-    int lhs_wait_frame = lhs_untilme - lhs_timecost;
-    int rhs_wait_frame = rhs_untilme - rhs_timecost;
-
-    const float lhs_remain_cargos = lhs_cargo_num - lhs_cap;
-    const float rhs_remain_cargos = rhs_cargo_num - rhs_cap;
-
-    const float lhs_score =
-        lhs_remain_cargos /
-        (lhs_wait_frame + (lhs_remain_cargos) / lhs._velocity + lhs._time);
-
-    const float rhs_score =
-        rhs_remain_cargos /
-        (rhs_wait_frame + (rhs_remain_cargos) / rhs._velocity + rhs._time);
-
-    return lhs_score < rhs_score; // ! maybe BUG BUG here
+    return true;
   }
 };
 
 void frameUpdate() {
   // TimeCounter _tc{__FUNCTION__};
-  // std::sort(rbegin(cargo_pqs), rend(cargo_pqs));
-
-  // while (not cargo_pqs.empty()) {
-  //   const auto back = cargo_pqs.back();
-  //   bool flag = cargos[back._id]._taken;
-  //   int rem = cargos[back._id]._disappear_frame - getCurrentFrame();
-  //   if (rem <= 0)
-  //     flag = true;
-  //   if (flag)
-  //     cargo_pqs.pop_back();
-  //   else
-  //     break;
-  // }
 
   CargoRobotDispatcher dispatcher;
   int avaiable_rots = dispatcher.countAvaiableRobots();
@@ -1092,7 +1158,7 @@ void frameUpdate() {
 
   for (auto &&b : berths) {
     // the back one is the current one
-    std::sort(std::rbegin(b._shipIds), rend(b._shipIds));
+    std::sort(std::rbegin(b._ships_here), rend(b._ships_here));
     berth_pqs.emplace_back(b._id);
   }
 
@@ -1111,7 +1177,7 @@ void frameUpdate() {
 
       if (tillu <= bert._time) {
         sh.ship(bid);
-        berths[bid]._shipIds.push_back(
+        berths[bid]._ships_here.push_back(
             {getCurrentFrame() + berths[bid]._time, sh._id});
       }
 
@@ -1121,9 +1187,9 @@ void frameUpdate() {
 
       auto &&bert = berths[sh._berth_id];
       uint32_t onoboard = 0;
-      while (not bert._cargoIds.empty() and onoboard < bert._velocity) {
+      while (not bert._cargos_here.empty() and onoboard < bert._velocity) {
         if (sh._size < Ship::capacity) {
-          bert._cargoIds.pop_front();
+          bert._cargos_here.pop_front();
           sh._size++;
           onoboard++;
         } else {
@@ -1139,16 +1205,16 @@ void frameUpdate() {
           getCurrentFrame() + bert._time + 1 >= FRAME_MAX) { // 发船
         sh.go();
         assert(bert._shipIds.front().second == sh._id);
-        bert._shipIds.pop_front();
+        bert._ships_here.pop_front();
       } else if (sh._free_frame > 25) {
-        bert._shipIds.pop_front();
+        bert._ships_here.pop_front();
         if (bert._time * 2 < FRAME_SHIP_SWITH_FROM_BERTH) { // 回虚拟点
           sh.go();
           assert(bert._shipIds.front().second == sh._id);
         } else { // 转港口
           int bid = rand() % BERTH_MAX;
           sh.ship(bid);
-          berths[bid]._shipIds.push_back(
+          berths[bid]._ships_here.push_back(
               {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, sh._id});
         }
       }

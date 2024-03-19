@@ -1,4 +1,8 @@
 #pragma once
+
+#define likely(x) __builtin_expect(!!(x), 1) 
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 constexpr unsigned int MAP_Y_AXIS_MAX = 200; // y axis
 constexpr unsigned int MAP_X_AXIS_MAX = 200; // x axis
 
