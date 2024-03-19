@@ -22,14 +22,6 @@ enum class Direction : uint8_t{
 
 class Particle{
 public:
-    Particle(std::array<std::pair<int8_t , int8_t>, ROBOT_NUM> sourcePoint,
-            std::array<std::pair<int8_t, int8_t>, ROBOT_NUM> targetPoint,
-            std::array<int32_t , ROBOT_NUM> cargo_val){
-        this->sourcePoint = sourcePoint;
-        this->targetPoint = targetPoint;
-        this->cargo_val = cargo_val;
-    }
-
     //初始化v0 = 0
     void Initialize(){
         _velo.fill(0.0);
@@ -40,6 +32,15 @@ public:
         }
 
         regular();
+    }
+
+    //传入sourcepoint,targetpoint, cargo_val
+    void set(std::array<std::pair<int8_t, int8_t>, ROBOT_NUM> src_pt,
+             std::array<std::pair<int8_t, int8_t>, ROBOT_NUM> targ_pt,
+             std::array<int32_t, ROBOT_NUM> cg_val){
+        this->sourcePoint = src_pt;
+        this->targetPoint = targ_pt;
+        this->cargo_val = cg_val;
     }
 
     //检查是否需要更新pbest
@@ -180,6 +181,7 @@ public:
     void Initialize(){
         Particles.resize(particle_num);
         for(auto &particle : Particles){
+//            particle.set();      //设置目标点与出发点并给出货物价值
             particle.Initialize();    //为每个粒子进行初始化
             particle.check_update();   //更新初始的随机策略的参数    （如果随机策略为负数的更新！！需要考虑！！！）
         }
