@@ -22,11 +22,13 @@ enum class Direction : uint8_t{
 
 class Particle{
 public:
-    std::array<int32_t , ROBOT_NUM> cargo_val;
-    std::array<std::pair<int8_t , int8_t>, ROBOT_NUM> sourcePoint;   //对应每个机器人的出发点与目标点
-    std::array<std::pair<int8_t, int8_t>, ROBOT_NUM> targetPoint;
-    std::array<std::pair<int8_t, int8_t>, ROBOT_NUM> nextPoint;
-    std::array<Direction, ROBOT_NUM> regular_position;   //输出的规范当前帧的所有机器人的一步策略
+    Particle(std::array<std::pair<int8_t , int8_t>, ROBOT_NUM> sourcePoint,
+            std::array<std::pair<int8_t, int8_t>, ROBOT_NUM> targetPoint,
+            std::array<int32_t , ROBOT_NUM> cargo_val){
+        this->sourcePoint = sourcePoint;
+        this->targetPoint = targetPoint;
+        this->cargo_val = cargo_val;
+    }
 
     //初始化v0 = 0
     void Initialize(){
@@ -59,6 +61,11 @@ public:
     friend class PSO_Algorithm;
 
 private:
+    std::array<int32_t , ROBOT_NUM> cargo_val;
+    std::array<std::pair<int8_t , int8_t>, ROBOT_NUM> sourcePoint;   //对应每个机器人的出发点与目标点
+    std::array<std::pair<int8_t, int8_t>, ROBOT_NUM> targetPoint;
+    std::array<std::pair<int8_t, int8_t>, ROBOT_NUM> nextPoint;
+    std::array<Direction, ROBOT_NUM> regular_position;   //输出的规范当前帧的所有机器人的一步策略
     std::array<double, ROBOT_NUM> _velo;   //定义doulble类型在更新参数时进行运算
     std::array<double, ROBOT_NUM> _xposi;
     int32_t Pbest_benefit;
@@ -209,8 +216,7 @@ public:
             }
             else {
                 update_flag = false;
-                noneupdate_num++;
-                if(noneupdate_num > NoneUpdate_threshold) break;    //满足收敛条件
+                if(++noneupdate_num > NoneUpdate_threshold) break;    //满足收敛条件
             }
         }
     }
