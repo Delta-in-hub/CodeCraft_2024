@@ -386,7 +386,8 @@ public:
     return std::abs(a.first - b.first) + std::abs(a.second - b.second);
   }
 
-  static std::vector<Direction>
+  // {Next step, distance}
+  static std::pair<Direction, uint32_t>
   aStarSearch(const std::pair<uint32_t, uint32_t> from,
               const std::pair<uint32_t, uint32_t> to) {
     TimeCounter _tc{__FUNCTION__};
@@ -394,7 +395,7 @@ public:
     // static const auto _from = from;
     static const auto _to = to;
 
-    std::vector<Direction> pathd;
+    // std::vector<Direction> pathd;
     /*
     对于任意一个格子n，其估价函数如下：
     f(n) = g(n) + h(n)
@@ -445,24 +446,28 @@ public:
 
       if (x == to.first and y == to.second) {
         // backtrack
+        uint32_t cnt = 0;
+        Direction last = Direction::none;
         while (not(x == from.first and y == from.second)) {
           int idx = static_cast<int>(road[x][y]);
-          pathd.push_back(reverse(road[x][y]));
+          // pathd.push_back(reverse(road[x][y]));
+          last = reverse(road[x][y]);
           assert(road[x][y] != Direction::none);
           assert(idx < 4);
           x += _sdir[idx][0];
           y += _sdir[idx][1];
           assert(isMoveAble(x, y));
+          cnt++;
         }
         // step is the shortest path length
-        if (step != pathd.size()) {
-          for (auto &&dir : pathd) {
-            std::cerr << "pathd: " << static_cast<int>(dir) << std::endl;
-          }
-          std::cerr << step << " " << pathd.size() << std::endl;
-          assert(step == pathd.size());
-        }
-        break;
+        // if (step != pathd.size()) {
+        //   for (auto &&dir : pathd) {
+        //     std::cerr << "pathd: " << static_cast<int>(dir) << std::endl;
+        //   }
+        //   std::cerr << step << " " << pathd.size() << std::endl;
+        //   assert(step == pathd.size());
+        // }
+        return {last, cnt};
       }
 
       for (int i = 0; i < 4; i++) {
@@ -477,13 +482,18 @@ public:
         }
       }
     }
-    std::reverse(pathd.begin(), pathd.end());
-    return pathd;
+    // std::reverse(pathd.begin(), pathd.end());
+    // return pathd;
+    return {Direction::none, -1};
   }
 
-  static const std::pair<uint32_t, uint32_t> getBerthPosition(uint32_t bid) {
+  static const std::pair<uint32_t, uint32_t>
+  getBerthPosition(uint32_t bid, bool random = false) {
     assert(bid < BERTH_MAX);
     const auto &bert = berths[bid];
+    if (not random)
+      return {bert._x, bert._y};
+
     const int xalias = getRandom(0, 3);
     const int yalias = getRandom(0, 3);
     return {bert._x + xalias, bert._y + yalias};
@@ -766,8 +776,8 @@ public:
   }
 };
 
-// std::priority_queue<CargoPqItem> cargos_pq;
-std::vector<CargoPqItem> cargo_pqs;
+std::priority_queue<CargoPqItem> cargos_pq;
+// std::vector<CargoPqItem> cargo_pqs;
 
 void initialization() {
   cargos.reserve(10 * FRAME_MAX);
@@ -811,7 +821,9 @@ uint32_t frameInput() {
   // 表示帧序号(从 1 开始递增) 、当前金钱数
   scanf("%u %lu", &frame_id, &money);
 
-  // assert(frame_id == frame_current);
+  assert(frame_id == frame_current);
+
+  frame_current = frame_id;
 
   uint32_t K;
   // 场上新增货物的数量 K
@@ -825,8 +837,8 @@ uint32_t frameInput() {
 
     cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price,
                       frame_id + FRAME_CARGO_REMAIN, false});
-    // cargos_pq.push(cargos.back());
-    cargo_pqs.push_back(cargos.back());
+    cargos_pq.push(cargos.back());
+    // cargo_pqs.push_back(cargos.back());
     auto [dis, bid] = Map::nearestBerth(x, y);
     berths[bid]._cargo_ongoing++;
   }
@@ -910,8 +922,8 @@ public:
       auto &&astar =
           Map::aStarSearch({robots[rid]._x, robots[rid]._y},
                            {cargos[cargo_id]._x, cargos[cargo_id]._y});
-      res.push_back({astar.size(), rid});
-      _robs_act[{rid, cargo_id}] = astar.front();
+      res.push_back({astar.second, rid});
+      _robs_act[{rid, cargo_id}] = astar.first;
     }
     if (not res.empty()) {
       auto minp = std::min_element(begin(res), end(res));
@@ -994,26 +1006,29 @@ public:
 };
 
 void frameUpdate() {
-  TimeCounter _tc{__FUNCTION__};
-  std::sort(rbegin(cargo_pqs), rend(cargo_pqs));
+  // TimeCounter _tc{__FUNCTION__};
+  // std::sort(rbegin(cargo_pqs), rend(cargo_pqs));
 
-  while (not cargo_pqs.empty()) {
-    const auto back = cargo_pqs.back();
-    bool flag = cargos[back._id]._taken;
-    int rem = cargos[back._id]._disappear_frame - getCurrentFrame();
-    if (rem <= 0)
-      flag = true;
-    if (flag)
-      cargo_pqs.pop_back();
-    else
-      break;
-  }
+  // while (not cargo_pqs.empty()) {
+  //   const auto back = cargo_pqs.back();
+  //   bool flag = cargos[back._id]._taken;
+  //   int rem = cargos[back._id]._disappear_frame - getCurrentFrame();
+  //   if (rem <= 0)
+  //     flag = true;
+  //   if (flag)
+  //     cargo_pqs.pop_back();
+  //   else
+  //     break;
+  // }
 
   CargoRobotDispatcher dispatcher;
   int avaiable_rots = dispatcher.countAvaiableRobots();
 
-  for (uint32_t i = 0; i < cargo_pqs.size() and avaiable_rots > 0; ++i) {
-    const auto &cargo = cargos[cargo_pqs[i]._id];
+  while (not cargos_pq.empty() and avaiable_rots > 0) {
+    // for (uint32_t i = 0; i < cargo_pqs.size() and avaiable_rots > 0; ++i) {
+    // const auto &cargo = cargos[cargo_pqs[i]._id];
+    const auto &cargo = cargos[cargos_pq.top()._id];
+    cargos_pq.pop();
     if (cargo._taken)
       continue;
     if (cargo._disappear_frame <= getCurrentFrame())
@@ -1047,8 +1062,8 @@ void frameUpdate() {
       rob.pull();
     } else {
       auto &&dirs =
-          Map::aStarSearch({rob._x, rob._y}, Map::getBerthPosition(bid));
-      auto dir = dirs.front();
+          Map::aStarSearch({rob._x, rob._y}, Map::getBerthPosition(bid, true));
+      auto dir = dirs.first;
       rob.move(dir);
     }
   }

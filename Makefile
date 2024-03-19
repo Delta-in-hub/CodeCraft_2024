@@ -19,3 +19,6 @@ test: debug
 
 replay:
 	xdg-open LinuxReleasev1.2/replayer/
+
+zip:
+	zip -rq `date +%F-%H-%M-%S`.zip *.cpp *.h CMakeLists.txt
