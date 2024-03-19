@@ -613,11 +613,13 @@ public:
   int _berth_id; // 目标泊位是虚拟点,则为-1
 
   uint32_t _size;
+  uint32_t _values;
 
   uint32_t _free_frame; // 累计有多少frame , 该船没有装货物了
 
   void clear() {
     _size = 0;
+    _values = 0;
     _free_frame = 0;
   }
 
@@ -777,6 +779,7 @@ bool getOutOfMyWay(std::vector<uint8_t> &boss, uint32_t rid) {
   return false;
 }
 
+// 实际上把给货物分配港口,分配机器人的活都干了
 class CargoPqItem {
 public:
   uint32_t _id;
@@ -834,67 +837,54 @@ public:
   float avgDistToRobots(uint32_t iter_max = 3) const {
     const auto &rs = this->distToRobots();
     uint32_t cnt = 0;
-    uint32_t manh_sum = 0;
-    for (; cnt < rs.size() and cnt < iter_max; ++cnt) {
-      const auto [manh, _] = rs[cnt];
-      manh_sum += manh;
+    uint32_t sum = 0;
+
+    for (auto [dis, rid] : rs) {
+      if (cnt >= iter_max)
+        break;
+      if (dis == -1)
+        continue;
+      sum += dis;
+      ++cnt;
     }
+
     if (unlikely(cnt == 0))
       return std::numeric_limits<float>::max();
-    return static_cast<float>(manh_sum) / cnt;
+    return static_cast<float>(sum) / cnt;
+  }
+
+  float getScore() const {
+    const auto &cargo = cargos[_id];
+    if (cargo._taken)
+      return std::numeric_limits<float>::min();
+
+    int32_t remain_frame = cargo._disappear_frame - getCurrentFrame();
+    if (remain_frame <= 0)
+      return std::numeric_limits<float>::min();
+
+    const auto nb_id = cargo._berth_id;
+    const auto nb_dis =
+        Map::getDistanceToBerth(cargo._origin_x, cargo._origin_y, nb_id);
+    const auto nb_time = berths[nb_id]._time;
+
+    const float avg_rob = this->avgDistToRobots();
+    remain_frame -= (nb_dis + avg_rob); // ! 最好用最近的机器人的距离
+    if (remain_frame < 0)
+      return std::numeric_limits<float>::min();
+
+    const float price = cargo._price;
+    return price / (nb_dis + avg_rob + nb_time);
   }
 
   bool operator<(const CargoPqItem &rhs) const {
     assert(_id < cargos.size());
     assert(rhs._id < cargos.size());
-
-    const auto &lhs_cargo = cargos[this->_id];
-    const auto &rhs_cargo = cargos[rhs._id];
-
-    const int lhs_flag = lhs_cargo._taken ? 1 : 0;
-    const int rhs_flag = rhs_cargo._taken ? 1 : 0;
-    if (unlikely(lhs_flag or rhs_flag))
-      return lhs_flag > rhs_flag;
-
-    int32_t lhs_remain_frame = lhs_cargo._disappear_frame - getCurrentFrame();
-    int32_t rhs_remain_frame = rhs_cargo._disappear_frame - getCurrentFrame();
-    if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
-      return lhs_remain_frame < rhs_remain_frame;
-
-    const auto lhs_nb_id = lhs_cargo._berth_id;
-    const auto lhs_nb_dis = Map::getDistanceToBerth(
-        lhs_cargo._origin_x, lhs_cargo._origin_y, lhs_nb_id);
-
-    const auto rhs_nb_id = rhs_cargo._berth_id;
-    const auto rhs_nb_dis = Map::getDistanceToBerth(
-        rhs_cargo._origin_x, rhs_cargo._origin_y, rhs_nb_id);
-
-    const float lhs_avg_rob = this->avgDistToRobots();
-    const float rhs_avg_rob = rhs.avgDistToRobots();
-
-    lhs_remain_frame -= (lhs_nb_dis + lhs_avg_rob);
-    rhs_remain_frame -= (rhs_nb_dis + rhs_avg_rob);
-
-    if (lhs_remain_frame <= 0 or rhs_remain_frame <= 0)
-      return lhs_remain_frame < rhs_remain_frame;
-
-    const float lhs_price = lhs_cargo._price;
-    const float rhs_price = rhs_cargo._price;
-
-    const auto lhs_nb_time = berths[lhs_nb_id]._time;
-    const auto rhs_nb_time = berths[rhs_nb_id]._time;
-
-    const float lhs_score =
-        lhs_price / (lhs_nb_dis + lhs_avg_rob + lhs_nb_time);
-    const float rhs_score =
-        rhs_price / (rhs_nb_dis + rhs_avg_rob + rhs_nb_time);
-
-    return lhs_score < rhs_score;
+    return this->getScore() < rhs.getScore();
   }
 
   bool operator==(const CargoPqItem &rhs) const { return _id == rhs._id; }
   bool operator>(const CargoPqItem &rhs) const {
-    if (*this == rhs)
+    if (unlikely(*this == rhs))
       return false;
     return rhs < *this;
   }
@@ -1072,14 +1062,6 @@ public:
   BerthPqItem(uint32_t bid) : _bid(bid) {
     const auto &lhs = berths[_bid];
     const auto lhs_wait_ships = lhs._ships_here.size();
-
-    auto lhs_cap = Ship::capacity * lhs_wait_ships;
-    if (lhs_wait_ships > 0) {
-      auto sh_nid = lhs._ships_here.front().second;
-      lhs_cap -= ships[sh_nid]._size;
-    }
-
-    _tillu = lhs_cap / lhs._velocity;
   }
 
   bool operator<(const BerthPqItem &rhsitem) const {
@@ -1087,6 +1069,65 @@ public:
     const auto &rhs = berths[rhsitem._bid];
 
     return true;
+  }
+};
+
+class BerthForVirtualPoint {
+public:
+  uint32_t _bid;
+  BerthForVirtualPoint() = delete;
+  BerthForVirtualPoint(uint32_t bid) : _bid(bid) {}
+  BerthForVirtualPoint(const Berth &b) : _bid(b._id) {}
+
+  float getScore() const {
+    const auto &lhs = berths[_bid];
+    if (lhs.countShips())
+      return std::numeric_limits<float>::min(); // min float
+
+    const float lhs_value = lhs.sumCargosValueNow();
+    const float lhs_cnt = lhs.countCargosNow();
+    const auto lhs_speed = lhs._velocity;
+    const auto lhs_time = lhs._time;
+
+    return lhs_value / (lhs_cnt / lhs_speed + lhs_time);
+  }
+
+  bool operator<(BerthForVirtualPoint r) const {
+    return this->getScore() < r.getScore();
+  }
+};
+
+class BerthForShipAtBerth {
+public:
+  uint32_t _bid, _shipid;
+  BerthForShipAtBerth() = delete;
+  BerthForShipAtBerth(uint32_t bid, uint32_t sid) : _bid(bid), _shipid(sid) {}
+
+  float getScore() const {
+    const auto &bert = berths[_bid];
+    if (bert.countShips())
+      return std::numeric_limits<float>::min();
+    const auto &ship = ships[_shipid];
+    const float cur_value = ship._values;
+    const auto remain_size = Ship::capacity - ship._size;
+    const auto bert_cnt = bert.countCargosNow();
+
+    const auto can_get = std::min(remain_size, bert_cnt);
+    uint32_t extra_value = 0;
+    for (uint32_t i = 0; i < can_get; ++i) {
+      const auto [price, cid] = bert._cargos_here[i];
+      extra_value += price;
+    }
+
+    const auto bert_time = bert._time;
+    const float bert_speed = bert._velocity;
+
+    return (cur_value + extra_value) /
+           (FRAME_SHIP_SWITH_FROM_BERTH + bert_time + (can_get / bert_speed));
+  }
+
+  bool operator<(BerthForShipAtBerth r) const {
+    return this->getScore() < r.getScore();
   }
 };
 
@@ -1167,6 +1208,7 @@ void frameUpdate() {
   for (auto &&sh : ships) {
     if (sh._status != Ship::Status::normal)
       continue;
+
     if (sh._berth_id == -1) { // 处于虚拟点
       if (berth_pqs.empty())
         continue;
@@ -1188,8 +1230,10 @@ void frameUpdate() {
       uint32_t onoboard = 0;
       while (not bert._cargos_here.empty() and onoboard < bert._velocity) {
         if (sh._size < Ship::capacity) {
+          const auto [cprice, cid] = bert._cargos_here.front();
           bert._cargos_here.pop_front();
           sh._size++;
+          sh._values += cprice;
           onoboard++;
         } else {
           break;
@@ -1197,15 +1241,13 @@ void frameUpdate() {
       }
       if (onoboard == 0)
         sh._free_frame++;
-      else
-        sh._free_frame = 0;
 
       if (sh._size == Ship::capacity or
           getCurrentFrame() + bert._time + 1 >= FRAME_MAX) { // 发船
         sh.go();
         assert(bert._shipIds.front().second == sh._id);
         bert._ships_here.pop_front();
-      } else if (sh._free_frame > 25) {
+      } else if (sh._free_frame > getRandom(0, 50)) {
         bert._ships_here.pop_front();
         if (bert._time * 2 < FRAME_SHIP_SWITH_FROM_BERTH) { // 回虚拟点
           sh.go();
