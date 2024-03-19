@@ -41,6 +41,20 @@ const std::array<uint8_t, 5> &getRandomDir() {
   std::shuffle(dir.begin(), dir.end(), gen);
   return cref(dir);
 }
+// [l,r]
+int getRandom(int l, int r) {
+  static std::random_device rd;
+  static std::mt19937 gen(rd());
+  std::uniform_int_distribution<int> dis(l, r);
+  return dis(gen);
+}
+
+template <class T> std::vector<T> &randShuffle(std::vector<T> &vec) {
+  static std::random_device rd;
+  static std::mt19937 gen(rd());
+  std::shuffle(vec.begin(), vec.end(), gen);
+  return ref(vec);
+}
 
 Direction reverse(Direction d) {
   switch (d) {
@@ -466,6 +480,15 @@ public:
     std::reverse(pathd.begin(), pathd.end());
     return pathd;
   }
+
+  static const std::pair<uint32_t, uint32_t> getBerthPosition(uint32_t bid) {
+    assert(bid < BERTH_MAX);
+    const auto &bert = berths[bid];
+    const int xalias = getRandom(0, 3);
+    const int yalias = getRandom(0, 3);
+    return {bert._x + xalias, bert._y + yalias};
+  }
+
 } map;
 
 char Map::_rawmap[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
@@ -1024,7 +1047,7 @@ void frameUpdate() {
       rob.pull();
     } else {
       auto &&dirs =
-          Map::aStarSearch({rob._x, rob._y}, {berths[bid]._x, berths[bid]._y});
+          Map::aStarSearch({rob._x, rob._y}, Map::getBerthPosition(bid));
       auto dir = dirs.front();
       rob.move(dir);
     }
