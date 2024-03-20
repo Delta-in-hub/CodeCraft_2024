@@ -133,6 +133,55 @@ public:
 };
 std::vector<Cargo> cargos;
 
+class Ship {
+public:
+  static uint32_t capacity;
+
+  uint32_t _id;
+  enum class Status : uint8_t {
+    moving = 0,
+    normal = 1,
+    waiting = 2,
+  } _status;
+
+  int _berth_id; // 目标泊位是虚拟点,则为-1
+
+  uint32_t _size;
+  uint32_t _values;
+
+  uint32_t _free_frame; // 累计有多少frame , 该船没有装货物了
+
+  void clear() {
+    _size = 0;
+    _values = 0;
+    _free_frame = 0;
+  }
+
+  void ship(uint32_t berth_target_id) {
+    // printf("ship %u %u\n", _id, berth_id);
+    assert(berth_target_id < BERTH_MAX);
+
+    this->_berth_id = berth_target_id;
+    this->_free_frame = 0;
+
+    ships_actions.push_back(
+        {ShipAction::ActionType::ship,
+         {static_cast<uint8_t>(_id), static_cast<uint8_t>(berth_target_id)}});
+  }
+  void go() {
+    // printf("go %u\n", _id);
+    this->_berth_id = -1;
+    this->_free_frame = 0;
+
+    ships_actions.push_back(
+        {ShipAction::ActionType::go, {static_cast<uint8_t>(_id), 0}});
+  }
+};
+
+uint32_t Ship::capacity = -1;
+
+std::array<Ship, SHIP_MAX> ships;
+
 class Berth {
 public:
   uint32_t _id;
@@ -144,6 +193,44 @@ public:
       _ships_here; // 该泊位的船只; {arrive_frame,ship id}
   std::deque<std::pair<uint32_t, uint32_t>>
       _cargos_here; // 该泊位的货物; {price , cargo id}
+
+  // <arrive_frame,ship id> Ship arrives here
+  void loadShip(std::pair<uint32_t, uint32_t> sh) { _ships_here.push_back(sh); }
+
+  // {price,cargo id}
+  void loadCargo(std::pair<uint32_t, uint32_t> cg) {
+    _cargos_here.push_back(cg);
+  }
+
+  void leaveShip() {
+    if (_ships_here.empty())
+      return;
+    _ships_here.pop_front();
+  }
+
+  uint32_t cargoGoOnBoardInOneFrame() {
+    if (_ships_here.empty())
+      return 0;
+    const auto p = _ships_here.front();
+    if (getCurrentFrame() < p.first)
+      return 0;
+    auto &ship = ships[p.second];
+    if (ship._status != Ship::Status::normal)
+      return 0;
+    uint32_t cargos_cnt = _cargos_here.size();
+    uint32_t can = std::min(cargos_cnt, Ship::capacity - ship._size);
+    for (uint32_t i = 0; i < can; i++) {
+      const auto p = _cargos_here.front();
+      _cargos_here.pop_front();
+      ship._size++;
+      ship._values += p.first;
+    }
+
+    return can;
+  }
+
+  auto curShip() const { return _ships_here.front(); }
+
   uint32_t countShipsNow() const {
     auto ret = std::count_if(begin(_ships_here), end(_ships_here),
                              [](const std::pair<uint32_t, uint32_t> p) {
@@ -598,48 +685,6 @@ const int Map::_sdir[4][2] = {{0, 1},  // 右
                               {0, -1}, // 左
                               {-1, 0}, // 上
                               {1, 0}}; // 下
-
-class Ship {
-public:
-  static uint32_t capacity;
-
-  uint32_t _id;
-  enum class Status : uint8_t {
-    moving = 0,
-    normal = 1,
-    waiting = 2,
-  } _status;
-
-  int _berth_id; // 目标泊位是虚拟点,则为-1
-
-  uint32_t _size;
-  uint32_t _values;
-
-  uint32_t _free_frame; // 累计有多少frame , 该船没有装货物了
-
-  void clear() {
-    _size = 0;
-    _values = 0;
-    _free_frame = 0;
-  }
-
-  void ship(uint32_t berth_target_id) {
-    // printf("ship %u %u\n", _id, berth_id);
-    assert(berth_target_id < BERTH_MAX);
-    ships_actions.push_back(
-        {ShipAction::ActionType::ship,
-         {static_cast<uint8_t>(_id), static_cast<uint8_t>(berth_target_id)}});
-  }
-  void go() {
-    // printf("go %u\n", _id);
-    ships_actions.push_back(
-        {ShipAction::ActionType::go, {static_cast<uint8_t>(_id), 0}});
-  }
-};
-
-uint32_t Ship::capacity = -1;
-
-std::array<Ship, SHIP_MAX> ships;
 
 bool getOutOfMyWay(std::vector<uint8_t> &boss, uint32_t rid);
 uint32_t isThereARobot(uint32_t x, uint32_t y);
@@ -1104,10 +1149,17 @@ public:
   BerthForShipAtBerth(uint32_t bid, uint32_t sid) : _bid(bid), _shipid(sid) {}
 
   float getScore() const {
+    const auto &ship = ships[_shipid];
+    if (_bid == static_cast<uint32_t>(-1)) {
+      const float cur_value = ship._values;
+      const auto &bert = berths[ship._berth_id];
+      const auto bert_time = bert._time;
+      return cur_value / bert_time;
+    }
+
     const auto &bert = berths[_bid];
     if (bert.countShips())
       return std::numeric_limits<float>::min();
-    const auto &ship = ships[_shipid];
     const float cur_value = ship._values;
     const auto remain_size = Ship::capacity - ship._size;
     const auto bert_cnt = bert.countCargosNow();
@@ -1130,6 +1182,101 @@ public:
     return this->getScore() < r.getScore();
   }
 };
+
+void shipsUpdate() {
+
+  static std::vector<uint32_t> ships_at_vp(BERTH_MAX);
+  static std::vector<uint32_t> ships_at_berth(BERTH_MAX);
+  ships_at_vp.clear();
+  ships_at_berth.clear();
+
+  for (const auto &sh : ships) {
+    if (sh._status != Ship::Status::normal)
+      continue;
+    if (sh._berth_id == -1) // 在虚拟点
+      ships_at_vp.push_back(sh._id);
+    else
+      ships_at_berth.push_back(sh._id);
+  }
+
+  static std::vector<BerthForVirtualPoint> vp_candidates(BERTH_MAX);
+  vp_candidates.clear();
+
+  if (not ships_at_vp.empty()) {
+
+    {
+      for (const auto &bert : berths) {
+        if (bert.countShips())
+          continue;
+        vp_candidates.push_back(bert._id);
+      }
+      std::sort(begin(vp_candidates), end(vp_candidates));
+    }
+
+    {
+      for (const auto shid : ships_at_vp) {
+        auto &ship = ships[shid];
+        if (unlikely(vp_candidates.empty()))
+          break;
+        const auto target_bid = vp_candidates.back()._bid;
+        const float score = vp_candidates.back().getScore();
+        vp_candidates.pop_back();
+        if (score <= 1e-5) // Magic Number
+          break;
+
+        ship.ship(target_bid);
+        auto &bert = berths[target_bid];
+        bert.loadShip({getCurrentFrame() + bert._time, ship._id});
+      }
+    }
+  }
+
+  static std::vector<BerthForShipAtBerth> berth_candidates(BERTH_MAX);
+  berth_candidates.clear();
+
+  if (likely(not ships_at_berth.empty())) {
+    const int free_upbound = getRandom(1, 50);
+    for (const auto shid : ships_at_berth) {
+      auto &ship = ships[shid];
+      auto &berth = berths[ship._berth_id];
+      auto cnt = berth.cargoGoOnBoardInOneFrame();
+      if (cnt > 0)
+        continue;
+
+      ship._free_frame++;
+      if (ship._free_frame > free_upbound) {
+
+        {
+          for (const auto &bert : berths) {
+            if (bert.countShips())
+              continue;
+            berth_candidates.push_back({bert._id, shid});
+          }
+        }
+
+        if (berth_candidates.empty())
+          continue;
+
+        auto maxp =
+            std::max_element(begin(berth_candidates), end(berth_candidates));
+        const int target = maxp->_bid;
+        if (target == -1) { // go to virtual point
+          ship.go();
+        } else {
+          ship.ship(target);
+          auto &target_bert = berths[target];
+          target_bert.loadShip(
+              {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, ship._id});
+        }
+        berth.leaveShip();
+      }
+    }
+  }
+}
+
+void robotsUpdate(){
+  ;
+}
 
 void frameUpdate() {
   // TimeCounter _tc{__FUNCTION__};
@@ -1194,73 +1341,7 @@ void frameUpdate() {
     }
   }
 
-  std::vector<BerthPqItem> berth_pqs;
-
-  for (auto &&b : berths) {
-    // the back one is the current one
-    std::sort(std::rbegin(b._ships_here), rend(b._ships_here));
-    berth_pqs.emplace_back(b._id);
-  }
-
-  std::sort(begin(berth_pqs), end(berth_pqs));
-
-  // Ship action
-  for (auto &&sh : ships) {
-    if (sh._status != Ship::Status::normal)
-      continue;
-
-    if (sh._berth_id == -1) { // 处于虚拟点
-      if (berth_pqs.empty())
-        continue;
-      auto bid = berth_pqs.back()._bid;
-      auto tillu = berth_pqs.back()._tillu;
-      const auto &bert = berths[bid];
-
-      if (tillu <= bert._time) {
-        sh.ship(bid);
-        berths[bid]._ships_here.push_back(
-            {getCurrentFrame() + berths[bid]._time, sh._id});
-      }
-
-      berth_pqs.pop_back();
-
-    } else { // 处于泊位
-
-      auto &&bert = berths[sh._berth_id];
-      uint32_t onoboard = 0;
-      while (not bert._cargos_here.empty() and onoboard < bert._velocity) {
-        if (sh._size < Ship::capacity) {
-          const auto [cprice, cid] = bert._cargos_here.front();
-          bert._cargos_here.pop_front();
-          sh._size++;
-          sh._values += cprice;
-          onoboard++;
-        } else {
-          break;
-        }
-      }
-      if (onoboard == 0)
-        sh._free_frame++;
-
-      if (sh._size == Ship::capacity or
-          getCurrentFrame() + bert._time + 1 >= FRAME_MAX) { // 发船
-        sh.go();
-        assert(bert._shipIds.front().second == sh._id);
-        bert._ships_here.pop_front();
-      } else if (sh._free_frame > getRandom(0, 50)) {
-        bert._ships_here.pop_front();
-        if (bert._time * 2 < FRAME_SHIP_SWITH_FROM_BERTH) { // 回虚拟点
-          sh.go();
-          assert(bert._shipIds.front().second == sh._id);
-        } else { // 转港口
-          int bid = rand() % BERTH_MAX;
-          sh.ship(bid);
-          berths[bid]._ships_here.push_back(
-              {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, sh._id});
-        }
-      }
-    }
-  }
+  shipsUpdate();
 }
 
 void frameOutput() {
