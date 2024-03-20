@@ -410,9 +410,9 @@ public:
       return *minp != static_cast<uint16_t>(-1);
     }
     case Type::berth:
-      return true;
     case Type::ocean:
     case Type::barrier:
+      return true;
     default:
       return false;
     }
@@ -1074,10 +1074,13 @@ uint32_t frameInput() {
     if (carryflag == 0) {
       robots[id]._carryStatus = Robot::CarryStatus::empty;
       robots[id]._carry_cargo_id = -1;
-    }
+    } else if (carryflag == 1) {
+      if (robots[id]._carry_cargo_id == -1) {
+        robots[id]._carryStatus = Robot::CarryStatus::empty;
+      }
 
-    // if (status == 1)
-    //   robots[id].pull();
+      robots[id]._carryStatus = Robot::CarryStatus::carrying;
+    } // 错误情况，重置机器人
   }
 
   while (_idx < cargos.size()) {
@@ -1339,21 +1342,25 @@ void robotsUpdate() {
   }
   std::sort(std::rbegin(robots_priority), std::rend(robots_priority));
 
-  for (auto [sc, rid] : robots_priority) {
-    auto &&rob = robots[rid];
-    rob.move();
+  {
+    for (auto [sc, rid] : robots_priority) {
+      auto &&rob = robots[rid];
+      rob.move();
+    }
+
+    unsetAllBarriers();
   }
 
-  unsetAllBarriers();
-
-  // 装货物，卸货
-  for (auto [sc, rid] : robots_priority) {
-    auto &rob = robots[rid];
-    if (rob.isInBerth()) {
-      rob.pull();
-    }
-    if (rob.canGetCargo()) {
-      rob.get();
+  {
+    // 装货物，卸货
+    for (auto [sc, rid] : robots_priority) {
+      auto &rob = robots[rid];
+      if (rob.isInBerth()) {
+        rob.pull();
+      }
+      if (rob.canGetCargo()) {
+        rob.get();
+      }
     }
   }
 }
