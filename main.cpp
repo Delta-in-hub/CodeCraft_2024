@@ -21,7 +21,7 @@
 
 uint32_t frame_current = 1;
 
-const uint32_t getCurrentFrame() { return frame_current; }
+uint32_t getCurrentFrame() { return frame_current; }
 
 // Order is IMPORTANT!
 enum class Direction : uint8_t {
@@ -392,7 +392,7 @@ public:
 
   // return berth_id, -1 if {x,y} is not a berth
   static int getBerthId(uint32_t x, uint32_t y) {
-    if (likely(_grids[x][y]._type == Type::berth))
+    if (unlikely(_grids[x][y]._type == Type::berth))
       return _grids[x][y]._berth_id;
     return -1;
   }
@@ -469,7 +469,7 @@ public:
     case Map::Type::space:
       return _grids[x][y]._dis[bid];
     case Map::Type::berth: {
-      auto nowbid = Map::getBerthId(x, y);
+      uint32_t nowbid = Map::getBerthId(x, y);
       if (nowbid == bid)
         return 0;
       else {
@@ -481,7 +481,7 @@ public:
             auto ny = y + j;
             if (not isMoveAble(nx, ny) or _grids[nx][ny]._type == Type::berth)
               continue;
-            auto ret = getDistanceToBerth(nx, ny, bid);
+            int ret = getDistanceToBerth(nx, ny, bid);
             if (ret != -1)
               return ret;
           }
@@ -559,7 +559,7 @@ public:
   static std::pair<Direction, uint32_t>
   aStarSearch(const std::pair<uint32_t, uint32_t> from,
               const std::pair<uint32_t, uint32_t> to) {
-    TimeCounter _tc{__FUNCTION__};
+    // TimeCounter _tc{__FUNCTION__};
     // Solving ERR: Reference to local variable declared in enclosing function
     // static const auto _from = from;
     static const auto _to = to;
@@ -652,7 +652,7 @@ public:
         uint16_t ny = y + _sdir[i][1];
         if (isMoveAble(nx, ny) and not inQueue[nx][ny]) {
           road[nx][ny] = reverse(static_cast<Direction>(i));
-          assert(road[nx][ny] == Direction::none);
+          assert(road[nx][ny] != Direction::none);
           pq.push({nx, ny, step + 1});
           // assert(inQueue[nx][ny] == false);
           inQueue[nx][ny] = true;
@@ -730,8 +730,8 @@ public:
 
   // 随时随地可以pull
   void pull() {
-    if (not isWithCargo())
-      return;
+    // if (not isWithCargo())
+    //   return;
 
     int bid = Map::getBerthId(_x, _y);
     if (bid == -1)
@@ -742,6 +742,7 @@ public:
 
     _carry_cargo_id = -1;
     _score = 0;
+    setTarget(_x, _y);
 
     // printf("pull %u\n", _id);
     assert(_id < ROBOT_MAX);
@@ -750,7 +751,7 @@ public:
   }
 
   bool move() {
-    pull();
+    // pull();
 
     if (_x == _target_x and _y == _target_y) {
       return false;
@@ -770,7 +771,7 @@ public:
     uint32_t nx = _x + Map::_sdir[d][0];
     uint32_t ny = _y + Map::_sdir[d][1];
 
-    assert(Map::isMoveable(nx, ny));
+    assert(Map::isMoveAble(nx, ny));
 
     _x = nx;
     _y = ny;
@@ -785,15 +786,24 @@ public:
     if (cid == static_cast<uint32_t>(-1))
       return false;
 
-    if (not this->isStandBy())
+    auto &cargo = cargos[cid];
+
+    if (not(_x == cargo._origin_x and _y == cargo._origin_y))
       return false;
 
+    // if (not this->isStandBy())
+    // return false;
+
     _carry_cargo_id = cid;
-    auto &cargo = cargos[cid];
     cargo._taken = true;
     _score = cargo._score;
 
     robots_target_cargo_ids[_id] = -1;
+
+    const auto bid = cargo._berth_id;
+    auto [tx, ty] = Map::getBerthPosition(bid, true);
+    _target_x = tx;
+    _target_y = ty;
 
     robots_actions.push_back(
         {RobotAction::ActionType::get, {static_cast<uint8_t>(_id), 0}});
@@ -814,11 +824,12 @@ void unsetAllBarriers() {
 
 uint32_t setRobotsAsBarrier(uint32_t rid) {
   unsetAllBarriers();
-  const auto &me = robots[rid];
+  // const auto &me = robots[rid];
   for (const auto &rob : robots) {
     if (unlikely(rob._id == rid))
       continue;
-    if (std::tie(rob._score, rob._id) > std::tie(me._score, me._id)) {
+    // if (std::tie(rob._score, rob._id) > std::tie(me._score, me._id))
+    {
       auto x = rob._x;
       auto y = rob._y;
       Map::_grids[x][y]._type = Map::Type::barrier;
@@ -833,12 +844,23 @@ class CargoPqItem {
 public:
   uint32_t _id;
   // vector<distance,rid> , nearest first
-  std::vector<std::pair<uint32_t, uint32_t>> _nearest_robs;
+  mutable std::vector<std::pair<uint32_t, uint32_t>> _nearest_robs;
 
   CargoPqItem() = delete;
   CargoPqItem(uint32_t id) : _id(id) {}
   CargoPqItem(const Cargo &cargo) : _id(cargo._id) {}
-  CargoPqItem(const CargoPqItem &item) : _id(item._id) {}
+  CargoPqItem(const CargoPqItem &item) : _id(item._id) {
+    _nearest_robs = item._nearest_robs;
+  }
+  CargoPqItem(CargoPqItem &&item) {
+    _id = item._id;
+    _nearest_robs = std::move(item._nearest_robs);
+  }
+  CargoPqItem &operator=(const CargoPqItem &item) {
+    _id = item._id;
+    _nearest_robs = item._nearest_robs;
+    return *this;
+  }
 
   // return the distance to robot, if robot with cargo ,return real distance ;
   // else return manhattan distance
@@ -865,7 +887,6 @@ public:
   std::vector<std::pair<uint32_t, uint32_t>>
   distToRobots(bool sorted = true) const {
     std::vector<std::pair<uint32_t, uint32_t>> ret;
-    auto cx = cargos[_id]._origin_x, cy = cargos[_id]._origin_y;
     for (auto &&robot : robots) {
       if (unlikely(robot._status == Robot::Status::useless))
         continue;
@@ -888,7 +909,7 @@ public:
     return *p;
   }
 
-  float avgDistToRobots(uint32_t iter_max = 3) {
+  float avgDistToRobots(uint32_t iter_max = 3) const {
     this->_nearest_robs = this->distToRobots();
     const auto &rs = this->_nearest_robs;
 
@@ -898,7 +919,7 @@ public:
     for (auto [dis, rid] : rs) {
       if (cnt >= iter_max)
         break;
-      if (dis == -1)
+      if (dis == static_cast<uint32_t>(-1))
         break;
       sum += dis;
       ++cnt;
@@ -909,7 +930,7 @@ public:
     return static_cast<float>(sum) / cnt;
   }
 
-  float getScore() {
+  float getScore() const {
     auto &cargo = cargos[_id];
     if (cargo._taken)
       return std::numeric_limits<float>::min();
@@ -934,14 +955,14 @@ public:
     return sc;
   }
 
-  bool operator<(CargoPqItem &rhs) {
+  bool operator<(const CargoPqItem &rhs) const {
     assert(_id < cargos.size());
     assert(rhs._id < cargos.size());
     return this->getScore() < rhs.getScore();
   }
 
   bool operator==(const CargoPqItem &rhs) const { return _id == rhs._id; }
-  bool operator>(CargoPqItem &rhs) {
+  bool operator>(const CargoPqItem &rhs) const {
     if (unlikely(*this == rhs))
       return false;
     return rhs < *this;
@@ -998,6 +1019,8 @@ uint32_t frameInput() {
 
   frame_current = frame_id;
 
+  auto _idx = cargos.size();
+
   uint32_t K;
   // 场上新增货物的数量 K
   scanf("%u", &K);
@@ -1014,7 +1037,7 @@ uint32_t frameInput() {
 
     cargos.back()._berth_id = Map::nearestBerth(x, y).second;
 
-    cargos_pq.push(cargos.back());
+    // cargos_pq.push(cargos.back());
   }
 
   for (uint8_t id = 0; id < ROBOT_MAX; ++id) {
@@ -1031,6 +1054,7 @@ uint32_t frameInput() {
     if (unlikely(getCurrentFrame() < 2)) {
       robots[id].setTarget(x, y);
       robots[id]._score = 0;
+      robots_target_cargo_ids[id] = -1;
     }
 
     if (unlikely(not Map::isConnectedToAnyBerth(x, y)))
@@ -1041,6 +1065,14 @@ uint32_t frameInput() {
     if (carryflag == 0) {
       robots[id]._carry_cargo_id = -1;
     }
+
+    // if (status == 1)
+    //   robots[id].pull();
+  }
+
+  while (_idx < cargos.size()) {
+    const auto &cargo = cargos[_idx++];
+    cargos_pq.push(cargo);
   }
 
   for (uint32_t id = 0; id < SHIP_MAX; ++id) {
@@ -1130,8 +1162,11 @@ public:
 
 void shipsUpdate() {
 
-  static std::vector<uint32_t> ships_at_vp(BERTH_MAX);
-  static std::vector<uint32_t> ships_at_berth(BERTH_MAX);
+  static std::vector<uint32_t> ships_at_vp;
+  ships_at_vp.reserve(BERTH_MAX);
+  static std::vector<uint32_t> ships_at_berth;
+  ships_at_berth.reserve(BERTH_MAX);
+
   ships_at_vp.clear();
   ships_at_berth.clear();
 
@@ -1144,7 +1179,8 @@ void shipsUpdate() {
       ships_at_berth.push_back(sh._id);
   }
 
-  static std::vector<BerthForVirtualPoint> vp_candidates(BERTH_MAX);
+  static std::vector<BerthForVirtualPoint> vp_candidates;
+  vp_candidates.reserve(BERTH_MAX);
   vp_candidates.clear();
 
   if (not ships_at_vp.empty()) {
@@ -1167,7 +1203,7 @@ void shipsUpdate() {
         const float score = vp_candidates.back().getScore();
         vp_candidates.pop_back();
         if (score <= 1e-5) // Magic Number
-          break;
+          break;           // 船不动
 
         ship.ship(target_bid);
         auto &bert = berths[target_bid];
@@ -1176,15 +1212,24 @@ void shipsUpdate() {
     }
   }
 
-  static std::vector<BerthForShipAtBerth> berth_candidates(BERTH_MAX);
+  static std::vector<BerthForShipAtBerth> berth_candidates;
+  berth_candidates.reserve(BERTH_MAX);
   berth_candidates.clear();
 
   if (likely(not ships_at_berth.empty())) {
-    const int free_upbound = getRandom(1, 50);
+    const uint32_t free_upbound = getRandom(1, 50);
     for (const auto shid : ships_at_berth) {
       auto &ship = ships[shid];
       auto &berth = berths[ship._berth_id];
       auto cnt = berth.cargoGoOnBoardInOneFrame();
+
+      if (ship._size == Ship::capacity or
+          getCurrentFrame() + berth._time + 1 >= FRAME_MAX) {
+        ship.go();
+        berth.leaveShip();
+        continue;
+      }
+
       if (cnt > 0)
         continue;
 
@@ -1197,10 +1242,8 @@ void shipsUpdate() {
               continue;
             berth_candidates.push_back({bert._id, shid});
           }
+          berth_candidates.push_back({static_cast<uint32_t>(-1), shid});
         }
-
-        if (berth_candidates.empty())
-          continue;
 
         auto maxp =
             std::max_element(begin(berth_candidates), end(berth_candidates));
@@ -1228,10 +1271,13 @@ void robotsUpdate() {
       robs_avaiable.insert(rob._id);
   }
 
-  static std::vector<CargoPqItem> _tmp(FRAME_MAX);
+  static std::vector<CargoPqItem> _tmp;
+  _tmp.reserve(FRAME_MAX);
 
-  while (not cargos_pq.empty() and robs_avaiable.size()) {
-    auto citem = std::move(cargos_pq.top());
+  // std::cerr << cargos_pq.size() << " " << robs_avaiable.size() << std::endl;
+
+  while ((not cargos_pq.empty()) and robs_avaiable.size()) {
+    auto citem = cargos_pq.top();
     cargos_pq.pop();
 
     const auto &c = cargos[citem._id];
@@ -1251,6 +1297,7 @@ void robotsUpdate() {
         dispatched = true;
         robs_avaiable.erase(rid);
         robots_target_cargo_ids[rid] = citem._id;
+        rob._score = c._score;
         break;
       }
     }
@@ -1267,11 +1314,26 @@ void robotsUpdate() {
   }
   _tmp.clear();
 
+  static std::vector<std::pair<float, uint32_t>> robots_priority;
+  robots_priority.reserve(ROBOT_MAX);
+  robots_priority.clear();
+
   for (auto &&rob : robots) {
+    robots_priority.push_back({rob._score, rob._id});
+  }
+  std::sort(std::rbegin(robots_priority), std::rend(robots_priority));
+
+  for (auto [sc, rid] : robots_priority) {
+    auto &&rob = robots[rid];
     auto cid = robots_target_cargo_ids[rob._id];
-    rob.get(cid);
-    rob.pull();
-    rob.move();
+    int bid = Map::getBerthId(rob._x, rob._y);
+    if (bid != -1) {
+      rob.pull();
+    } else {
+      rob.move();
+      rob.get(cid);
+    }
+    // rob.pull();
   }
 
   unsetAllBarriers();
