@@ -19,18 +19,11 @@
 #include <utility>
 #include <vector>
 
+#include "PSO.hpp"
+
 uint32_t frame_current = 1;
 
 uint32_t getCurrentFrame() { return frame_current; }
-
-// Order is IMPORTANT!
-enum class Direction : uint8_t {
-  right = 0,
-  left = 1,
-  up = 2,
-  down = 3,
-  none,
-};
 
 const std::array<uint8_t, 5> &getRandomDir() {
   static std::random_device rd;
@@ -1281,12 +1274,9 @@ void robotsUpdate() {
   std::unordered_set<uint32_t> robs_avaiable;
 
   for (const auto &rob : robots) {
-    if (rob._status != Robot::Status::normal)
-      continue;
-    if (rob._target_cargo_id != static_cast<uint32_t>(-1)) // 已经被分配了
-      continue;
-
     robs_avaiable.insert(rob._id);
+    src_pt[rob._id].first = rob._x;
+    src_pt[rob._id].second = rob._y;
   }
 
   static std::vector<CargoPqItem> _tmp;
@@ -1310,8 +1300,15 @@ void robotsUpdate() {
     for (uint32_t i = 0; i < cnt; i++) {
       const auto [dis, rid] = nrs[i];
       if (robs_avaiable.count(rid)) { // 可以分配
-        dispatched = true;
+
+        targ_pt[rid].first = c._origin_x;
+        targ_pt[rid].second = c._origin_y;
+
+        cg_val[rid] = c._price;
+
         robs_avaiable.erase(rid);
+        dispatched = true;
+
         auto &rob = robots[rid];
         rob._target_cargo_id = c._id;
         if (rob._carryStatus == Robot::CarryStatus::empty) {
