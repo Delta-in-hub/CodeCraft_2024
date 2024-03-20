@@ -21,7 +21,7 @@
 
 uint32_t frame_current = 1;
 
-const uint32_t &getCurrentFrame() { return frame_current; }
+const uint32_t getCurrentFrame() { return frame_current; }
 
 // Order is IMPORTANT!
 enum class Direction : uint8_t {
@@ -124,6 +124,7 @@ public:
   uint32_t _disappear_frame;
   bool _taken;        // 已经被机器人拿起
   uint32_t _berth_id; // 距离最近的港口id
+  float _score;
 
   bool isAvailable() const {
     if (getCurrentFrame() >= _disappear_frame and not _taken)
@@ -650,8 +651,8 @@ public:
         uint16_t nx = x + _sdir[i][0];
         uint16_t ny = y + _sdir[i][1];
         if (isMoveAble(nx, ny) and not inQueue[nx][ny]) {
-          assert(road[nx][ny] == Direction::none);
           road[nx][ny] = reverse(static_cast<Direction>(i));
+          assert(road[nx][ny] == Direction::none);
           pq.push({nx, ny, step + 1});
           // assert(inQueue[nx][ny] == false);
           inQueue[nx][ny] = true;
@@ -674,8 +675,7 @@ public:
     const int yalias = getRandom(0, 3);
     return {bert._x + xalias, bert._y + yalias};
   }
-
-} map;
+};
 
 char Map::_rawmap[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
 Map::Grid Map::_grids[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
@@ -686,8 +686,8 @@ const int Map::_sdir[4][2] = {{0, 1},  // 右
                               {-1, 0}, // 上
                               {1, 0}}; // 下
 
-bool getOutOfMyWay(std::vector<uint8_t> &boss, uint32_t rid);
-uint32_t isThereARobot(uint32_t x, uint32_t y);
+std::array<uint32_t, ROBOT_MAX> robots_target_cargo_ids;
+uint32_t setRobotsAsBarrier(uint32_t rid);
 
 class Robot {
 public:
@@ -704,9 +704,7 @@ public:
 
   uint32_t _target_x, _target_y; // 目标点的坐标
 
-  // uint32_t _target_cargo_id;
-
-  // bool _already_moved;
+  float _score;
 
   bool isWithCargo() const {
     return _carry_cargo_id != static_cast<uint32_t>(-1);
@@ -716,118 +714,127 @@ public:
     return Map::_grids[_x][_y]._type == Map::Type::berth;
   }
 
-  bool move(Direction direction) {
-    if (direction == Direction::none or _already_moved)
-      return false;
+  bool isGoingToBerth() const { return isWithCargo(); }
+  bool isGoingToCargo() const { return !isWithCargo(); }
 
-    uint32_t tmp = static_cast<uint32_t>(direction);
-    assert(tmp < 4);
-
-    uint32_t dx = _x + Map::_sdir[tmp][0];
-    uint32_t dy = _y + Map::_sdir[tmp][1];
-
-    assert(Map::isMoveAble(dx, dy));
-    int rid = isThereARobot(dx, dy);
-    if (rid != -1) {
-      std::vector<uint8_t> boss;
-      boss.push_back(this->_id);
-      auto flag = getOutOfMyWay(boss, rid);
-      if (not flag)
-        return false;
-    }
-
-    _x = dx;
-    _y = dy;
-    _already_moved = true;
-
-    assert(_id < ROBOT_MAX);
-
-    // printf("move %u %u\n", _id, static_cast<uint32_t>(direction));
-    robots_actions.push_back(
-        {RobotAction::ActionType::move,
-         {static_cast<uint8_t>(_id), static_cast<uint8_t>(direction)}});
-
-    return true;
+  void setTarget(uint32_t x, uint32_t y) {
+    _target_x = x;
+    _target_y = y;
   }
 
-  void get() {
-    assert(_id < ROBOT_MAX);
-    // printf("get %u\n", _id);
-    robots_actions.push_back(
-        {RobotAction::ActionType::get, {static_cast<uint8_t>(_id), 0}});
+  bool isStandBy() const {
+    if (unlikely(_target_x == _x && _target_y == _y))
+      return true;
+    return false;
   }
 
+  // 随时随地可以pull
   void pull() {
-    int bid = Map::getBerthId(_x, _y);
-    if (bid == -1)
-      return;
     if (not isWithCargo())
       return;
 
-    berths[bid]._cargos_here.push_back(
-        {cargos[_carry_cargo_id]._price, _carry_cargo_id});
+    int bid = Map::getBerthId(_x, _y);
+    if (bid == -1)
+      return;
+
+    auto &bert = berths[bid];
+    bert.loadCargo({cargos[_carry_cargo_id]._price, _carry_cargo_id});
+
     _carry_cargo_id = -1;
+    _score = 0;
 
     // printf("pull %u\n", _id);
     assert(_id < ROBOT_MAX);
     robots_actions.push_back(
         {RobotAction::ActionType::pull, {static_cast<uint8_t>(_id), 0}});
   }
+
+  bool move() {
+    pull();
+
+    if (_x == _target_x and _y == _target_y) {
+      return false;
+    }
+
+    setRobotsAsBarrier(_id);
+
+    auto [direction, distance] =
+        Map::aStarSearch({_x, _y}, {_target_x, _target_y});
+
+    if (direction == Direction::none) { // 无路可走
+      return false;
+    }
+
+    uint32_t d = static_cast<uint32_t>(direction);
+
+    uint32_t nx = _x + Map::_sdir[d][0];
+    uint32_t ny = _y + Map::_sdir[d][1];
+
+    assert(Map::isMoveable(nx, ny));
+
+    _x = nx;
+    _y = ny;
+
+    robots_actions.push_back(
+        {RobotAction::ActionType::move,
+         {static_cast<uint8_t>(_id), static_cast<uint8_t>(direction)}});
+    return true;
+  }
+
+  bool get(uint32_t cid) {
+    if (cid == static_cast<uint32_t>(-1))
+      return false;
+
+    if (not this->isStandBy())
+      return false;
+
+    _carry_cargo_id = cid;
+    auto &cargo = cargos[cid];
+    cargo._taken = true;
+    _score = cargo._score;
+
+    robots_target_cargo_ids[_id] = -1;
+
+    robots_actions.push_back(
+        {RobotAction::ActionType::get, {static_cast<uint8_t>(_id), 0}});
+    return true;
+  }
 };
 
 std::array<Robot, ROBOT_MAX> robots;
 
-uint32_t isThereARobot(uint32_t x, uint32_t y) {
-  auto p = std::find_if(begin(robots), end(robots), [x, y](const Robot &rob) {
-    return rob._x == x and rob._y == y;
-  });
-  if (p != end(robots))
-    return p->_id;
-  return -1;
+static std::vector<std::pair<uint32_t, uint32_t>> robotsAsBarrier(ROBOT_MAX);
+
+void unsetAllBarriers() {
+  for (auto [x, y] : robotsAsBarrier) {
+    Map::_grids[x][y]._type = Map::Type::space;
+  }
+  robotsAsBarrier.clear();
 }
 
-// return true if rob[rid] can move away , false if rob[rid] is already moved or
-// no way to move.
-bool getOutOfMyWay(std::vector<uint8_t> &boss, uint32_t rid) {
-  if (robots[rid]._already_moved) {
-    boss.pop_back();
-    return false;
-  }
-  const auto &dirs = getRandomDir();
-  const auto x = robots[rid]._x, y = robots[rid]._y;
-
-  std::vector<uint8_t> blocked_robs;
-
-  for (auto &&dir : dirs) {
-    if (Direction::none == static_cast<Direction>(dir))
+uint32_t setRobotsAsBarrier(uint32_t rid) {
+  unsetAllBarriers();
+  const auto &me = robots[rid];
+  for (const auto &rob : robots) {
+    if (unlikely(rob._id == rid))
       continue;
-    auto dx = x + Map::_sdir[dir][0], dy = y + Map::_sdir[dir][1];
-    if (not Map::isMoveAble(dx, dy))
-      continue;
-    int resid = isThereARobot(dx, dy);
-    if (resid == -1) { // 没有机器人,可以走
-      boss.pop_back();
-      return robots[rid].move(
-          static_cast<Direction>(dir)); // should always be true
-    } else if (std::find(boss.begin(), boss.end(), resid) == boss.end())
-      blocked_robs.push_back(resid);
-  }
-  for (auto bid : blocked_robs) {
-    boss.push_back(rid);
-    bool flag = getOutOfMyWay(boss, bid);
-    if (flag) {
-      boss.pop_back();
-      return true;
+    if (std::tie(rob._score, rob._id) > std::tie(me._score, me._id)) {
+      auto x = rob._x;
+      auto y = rob._y;
+      Map::_grids[x][y]._type = Map::Type::barrier;
+      robotsAsBarrier.push_back(std::make_pair(x, y));
     }
   }
-  boss.pop_back();
-  return false;
+  return robotsAsBarrier.size();
 }
 
 // 实际上把给货物分配港口,分配机器人的活都干了
 class CargoPqItem {
 public:
   uint32_t _id;
+  // vector<distance,rid> , nearest first
+  std::vector<std::pair<uint32_t, uint32_t>> _nearest_robs;
+
   CargoPqItem() = delete;
   CargoPqItem(uint32_t id) : _id(id) {}
   CargoPqItem(const Cargo &cargo) : _id(cargo._id) {}
@@ -862,7 +869,9 @@ public:
     for (auto &&robot : robots) {
       if (unlikely(robot._status == Robot::Status::useless))
         continue;
-      auto dis = this->distanceToRobot(robot._id);
+      int dis = this->distanceToRobot(robot._id);
+      if (dis == -1)
+        continue;
       ret.push_back({dis, robot._id});
     }
     if (sorted)
@@ -879,8 +888,10 @@ public:
     return *p;
   }
 
-  float avgDistToRobots(uint32_t iter_max = 3) const {
-    const auto &rs = this->distToRobots();
+  float avgDistToRobots(uint32_t iter_max = 3) {
+    this->_nearest_robs = this->distToRobots();
+    const auto &rs = this->_nearest_robs;
+
     uint32_t cnt = 0;
     uint32_t sum = 0;
 
@@ -888,7 +899,7 @@ public:
       if (cnt >= iter_max)
         break;
       if (dis == -1)
-        continue;
+        break;
       sum += dis;
       ++cnt;
     }
@@ -898,8 +909,8 @@ public:
     return static_cast<float>(sum) / cnt;
   }
 
-  float getScore() const {
-    const auto &cargo = cargos[_id];
+  float getScore() {
+    auto &cargo = cargos[_id];
     if (cargo._taken)
       return std::numeric_limits<float>::min();
 
@@ -918,23 +929,26 @@ public:
       return std::numeric_limits<float>::min();
 
     const float price = cargo._price;
-    return price / (nb_dis + avg_rob + nb_time);
+    const float sc = price / (nb_dis + avg_rob + nb_time);
+    cargo._score = sc;
+    return sc;
   }
 
-  bool operator<(const CargoPqItem &rhs) const {
+  bool operator<(CargoPqItem &rhs) {
     assert(_id < cargos.size());
     assert(rhs._id < cargos.size());
     return this->getScore() < rhs.getScore();
   }
 
   bool operator==(const CargoPqItem &rhs) const { return _id == rhs._id; }
-  bool operator>(const CargoPqItem &rhs) const {
+  bool operator>(CargoPqItem &rhs) {
     if (unlikely(*this == rhs))
       return false;
     return rhs < *this;
   }
 };
 
+// 所有在地图上还没有被拿的所有货物,可能包含过期的货物
 std::priority_queue<CargoPqItem> cargos_pq;
 // std::vector<CargoPqItem> cargo_pqs;
 
@@ -943,7 +957,7 @@ void initialization() {
   robots_actions.reserve(ROBOT_MAX);
   ships_actions.reserve(SHIP_MAX);
 
-  map.readmap();
+  Map::readmap();
 
   for (uint32_t i = 0; i < BERTH_MAX; i++) {
     uint32_t id, x, y, time, velocity;
@@ -996,7 +1010,7 @@ uint32_t frameInput() {
 
     cargos.push_back({static_cast<uint32_t>(cargos.size()), x, y, price,
                       frame_id + FRAME_CARGO_REMAIN, false,
-                      static_cast<uint32_t>(0)});
+                      static_cast<uint32_t>(0), 0.0});
 
     cargos.back()._berth_id = Map::nearestBerth(x, y).second;
 
@@ -1013,6 +1027,11 @@ uint32_t frameInput() {
     robots[id]._x = x;
     robots[id]._y = y;
     // robots[id]._already_moved = false;
+
+    if (unlikely(getCurrentFrame() < 2)) {
+      robots[id].setTarget(x, y);
+      robots[id]._score = 0;
+    }
 
     if (unlikely(not Map::isConnectedToAnyBerth(x, y)))
       robots[id]._status = Robot::Status::useless;
@@ -1041,80 +1060,6 @@ uint32_t frameInput() {
   char okk[32];
   scanf("%s", okk);
   return frame_id;
-};
-
-class CargoRobotDispatcher {
-  std::unordered_set<uint32_t> _unavaiable_robs;
-  // key <rob_id,cargo_id> value <Direction>
-  std::map<std::pair<uint32_t, uint32_t>, Direction> _robs_act;
-
-public:
-  CargoRobotDispatcher() {
-    for (uint32_t i = 0; i < ROBOT_MAX; ++i) {
-      const auto &rob = robots[i];
-      if (rob.isWithCargo() or rob._status != Robot::Status::normal)
-        _unavaiable_robs.insert(i);
-    }
-  }
-  CargoRobotDispatcher(const CargoRobotDispatcher &rhs) = delete;
-  uint32_t countAvaiableRobots() const {
-    assert(_unavaiable_robs.size() <= ROBOT_MAX);
-    return ROBOT_MAX - _unavaiable_robs.size();
-  }
-
-  uint32_t dispatch(uint32_t cargo_id, uint32_t bestof = 3) {
-    if (cargos[cargo_id]._taken)
-      return -1;
-    std::vector<std::pair<uint32_t, uint32_t>> res; // {distance, robot_id}
-    const auto &manh_robs = CargoPqItem::manhattanRobots(cargo_id);
-    for (uint32_t i = 0; i < bestof and i < manh_robs.size(); ++i) {
-      const auto rid = manh_robs[i].second;
-      if (manh_robs[i].first == 0) { // 直接到达
-        res.push_back({0, rid});
-        _robs_act[{rid, cargo_id}] = Direction::none;
-        break;
-      }
-      if (_unavaiable_robs.count(
-              rid)) // Robot already carry cargo or not available
-        continue;
-      auto &&astar = Map::aStarSearch(
-          {robots[rid]._x, robots[rid]._y},
-          {cargos[cargo_id]._origin_x, cargos[cargo_id]._origin_y});
-      res.push_back({astar.second, rid});
-      _robs_act[{rid, cargo_id}] = astar.first;
-    }
-    if (not res.empty()) {
-      auto minp = std::min_element(begin(res), end(res));
-      _unavaiable_robs.insert(minp->second);
-      return minp->second;
-    }
-    return -1;
-  }
-
-  Direction getDirection(uint32_t rob_id, uint32_t cargo_id) const {
-    auto it = _robs_act.find({rob_id, cargo_id});
-    if (it == end(_robs_act))
-      return Direction::none;
-    return it->second;
-  }
-};
-
-class BerthPqItem {
-public:
-  uint32_t _bid;
-  uint32_t _tillu;
-
-  BerthPqItem(uint32_t bid) : _bid(bid) {
-    const auto &lhs = berths[_bid];
-    const auto lhs_wait_ships = lhs._ships_here.size();
-  }
-
-  bool operator<(const BerthPqItem &rhsitem) const {
-    const auto &lhs = berths[_bid];
-    const auto &rhs = berths[rhsitem._bid];
-
-    return true;
-  }
 };
 
 class BerthForVirtualPoint {
@@ -1274,72 +1219,68 @@ void shipsUpdate() {
   }
 }
 
-void robotsUpdate(){
-  ;
+void robotsUpdate() {
+
+  std::unordered_set<uint32_t> robs_avaiable;
+
+  for (const auto &rob : robots) {
+    if (rob.isStandBy())
+      robs_avaiable.insert(rob._id);
+  }
+
+  static std::vector<CargoPqItem> _tmp(FRAME_MAX);
+
+  while (not cargos_pq.empty() and robs_avaiable.size()) {
+    auto citem = std::move(cargos_pq.top());
+    cargos_pq.pop();
+
+    const auto &c = cargos[citem._id];
+
+    if (not c.isAvailable())
+      continue;
+
+    bool dispatched = false;
+    const auto &nrs = citem._nearest_robs;
+    constexpr unsigned long bestof = ROBOT_MAX / 2;
+    const uint32_t cnt = std::min(bestof, nrs.size());
+    for (uint32_t i = 0; i < cnt; i++) {
+      const auto [dis, rid] = nrs[i];
+      if (robs_avaiable.count(rid)) { // 可以分配
+        auto &rob = robots[rid];
+        rob.setTarget(c._origin_x, c._origin_y);
+        dispatched = true;
+        robs_avaiable.erase(rid);
+        robots_target_cargo_ids[rid] = citem._id;
+        break;
+      }
+    }
+    if (not dispatched) {
+      _tmp.push_back(std::move(citem));
+    }
+  }
+
+  for (auto &&cargo : _tmp) {
+    const auto &c = cargos[cargo._id];
+    if (not c.isAvailable())
+      continue;
+    cargos_pq.push(std::move(cargo));
+  }
+  _tmp.clear();
+
+  for (auto &&rob : robots) {
+    auto cid = robots_target_cargo_ids[rob._id];
+    rob.get(cid);
+    rob.pull();
+    rob.move();
+  }
+
+  unsetAllBarriers();
 }
 
 void frameUpdate() {
   // TimeCounter _tc{__FUNCTION__};
 
-  CargoRobotDispatcher dispatcher;
-  int avaiable_rots = dispatcher.countAvaiableRobots();
-
-  std::vector<CargoPqItem> cargos_tmp;
-
-  while (not cargos_pq.empty() and avaiable_rots > 0) {
-    // for (uint32_t i = 0; i < cargo_pqs.size() and avaiable_rots > 0; ++i) {
-    // const auto &cargo = cargos[cargo_pqs[i]._id];
-    const auto cargoitem = cargos_pq.top();
-    cargos_pq.pop();
-
-    const auto &cargo = cargos[cargoitem._id];
-    if (cargo._taken)
-      continue;
-    if (cargo._disappear_frame <= getCurrentFrame())
-      continue;
-    cargos_tmp.push_back(cargoitem);
-    int rob_id = dispatcher.dispatch(cargo._id);
-    if (rob_id == -1)
-      continue;
-
-    avaiable_rots--;
-    auto &rob = robots[rob_id];
-    // let rob_id goto cargo._id
-    auto dir = dispatcher.getDirection(rob_id, cargo._id);
-    if (dir == Direction::none) {
-      cargos_tmp.pop_back();
-      // std::cerr << rob_id << std::endl;
-      rob.get();
-      rob._carry_cargo_id = cargo._id;
-      cargos[cargo._id]._taken = true; // 写法不够优雅
-    } else {
-      rob.move(dir);
-    }
-  }
-
-  for (auto &&item : cargos_tmp) {
-    cargos_pq.push(item);
-  }
-
-  // Now let robots which is with cargo moving
-  for (auto &&rob : robots) {
-    if (rob._status != Robot::Status::normal)
-      continue;
-    if (not rob.isWithCargo())
-      continue;
-    if (rob.isInBerth()) {
-      rob.pull();
-    }
-    auto [dis, bid] = Map::nearestBerth(rob._x, rob._y);
-    if (dis == 0) {
-      rob.pull();
-    } else {
-      auto &&dirs =
-          Map::aStarSearch({rob._x, rob._y}, Map::getBerthPosition(bid, true));
-      auto dir = dirs.first;
-      rob.move(dir);
-    }
-  }
+  robotsUpdate();
 
   shipsUpdate();
 }
