@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <iterator>
@@ -739,7 +740,6 @@ void unsetAllBarriers() {
   robotsAsBarrier.clear();
 }
 
-static inline bool isThereARobotNow(uint32_t x, uint32_t y);
 std::pair<uint32_t, uint32_t> robots_originp[ROBOT_MAX];
 
 class Robot {
@@ -866,41 +866,13 @@ public:
     return {nx, ny};
   }
 
-  // {Direction, robot id}
-  std::vector<std::pair<Direction, uint32_t>> robotsAroundMe() const {
-    std::vector<std::pair<Direction, uint32_t>> ret;
-    for (int i = 0; i < 4; i++) {
-      auto np = this->getCurPos();
-      np.first += Map::_sdir[i][0];
-      np.second += Map::_sdir[i][1];
-      if (unlikely(Map::isOutOfRange(np.first, np.second)))
-        continue;
-      auto rid = isThereARobotNow(np.first, np.second);
-      if (likely(rid == -1))
-        continue;
-      ret.push_back({static_cast<Direction>(i), rid});
-    }
-    return ret;
-  }
-
-  Direction randomGoD(const std::vector<std::pair<uint32_t, uint32_t>> &notgo) {
-    const auto &ra = getRandomDir();
-    for (auto i : ra) {
-      auto dir = static_cast<Direction>(i);
-      if (dir == Direction::none)
-        continue;
-      auto nx = _x + Map::_sdir[i][0];
-      auto ny = _y + Map::_sdir[i][1];
-      if (not Map::isMoveAble(nx, ny))
-        continue;
-      decltype(notgo.back()) np = {nx, ny};
-      if (std::find(begin(notgo), end(notgo), np) == end(notgo))
-        return dir;
-    }
-    return Direction::none;
-  }
+  static std::array<std::pair<uint32_t, uint32_t>, ROBOT_MAX> next_posi;
 
   bool move(Direction dir) {
+
+    if (_already_moved)
+      return false;
+
     if (dir == Direction::none)
       return false;
 
@@ -915,24 +887,99 @@ public:
     robots_actions.push_back(
         {RobotAction::ActionType::move,
          {static_cast<uint8_t>(_id), static_cast<uint8_t>(dir)}});
+
+    _already_moved = true;
     return true;
   }
 
   bool _already_moved;
-  void move2() {
-    if (_already_moved)
-      return;
-    auto p = getNextPos();
-    auto dir = Map::getDirection(getCurPos(), p);
-    int rid = isThereARobotNow(p.first, p.second);
-    if (rid != -1){
-      
-    }
-      ;
-    
-      ;
 
-    _already_moved = true;
+  static std::vector<uint32_t> caller_move2;
+
+  bool move2(bool mustgo) {
+
+    if (_already_moved)
+      return false;
+
+    Direction dir = Map::getDirection(this->getCurPos(), next_posi[this->_id]);
+
+    uint32_t nx, ny;
+
+    if (dir == Direction::none) {
+      nx = this->_x;
+      ny = this->_y;
+    } else {
+      int idx = static_cast<int>(dir);
+      nx = this->_x + Map::_sdir[idx][0];
+      ny = this->_y + Map::_sdir[idx][1];
+    }
+
+    int tid = isThereARobotNow(nx, ny);
+
+    if (tid == -1) { // 无机器人
+    _label1:
+      return this->move(dir);
+    } else if (tid == this->_id) {
+      if (not mustgo) {
+        goto _label1;
+        // return this->move(dir);
+      } else {
+        goto _label2;
+      }
+    } else {
+    _label2:
+      auto p = std::find(std::begin(caller_move2), std::end(caller_move2), tid);
+
+      if (p != std::end(caller_move2)) { // tid 是他的外层,自己就要走
+      // _label2:
+      _label3:
+        std::vector<std::pair<uint32_t, Direction>> there_robots;
+        for (int i = 0; i < 4; i++) {
+          Direction tdir = static_cast<Direction>(i);
+          uint32_t tnx = this->_x + Map::_sdir[i][0];
+          uint32_t tny = this->_y + Map::_sdir[i][1];
+          if (not Map::isMoveAble(tnx, tny))
+            continue;
+          int ttid = isThereARobotNow(tnx, tny);
+          if (ttid == -1) {
+            return this->move(tdir); // 往空地走
+          } else {
+            there_robots.push_back({ttid, tdir});
+          }
+        }
+        for (auto [rid, rdir] : there_robots) {
+          auto p =
+              std::find(std::begin(caller_move2), std::end(caller_move2), rid);
+          if (p != std::end(caller_move2)) // i 是他的caller
+            continue;
+
+          auto &ttrb = robots[rid];
+          caller_move2.push_back(rid);
+          bool flag = ttrb.move2(true);
+          caller_move2.pop_back();
+          if (flag) {
+            return this->move(rdir);
+          }
+        }
+        std::abort();
+        return false; // 死锁了
+      } else {        // tid 不是他的外层
+        auto &trb = robots[tid];
+        caller_move2.push_back(tid);
+        bool flag = trb.move2(true);
+        caller_move2.pop_back();
+        if (flag) {
+          return this->move(dir);
+        } else {
+          goto _label3;
+        }
+        return flag;
+      }
+    }
+
+    // Never reach here
+    std::abort();
+    return false;
   }
 
   bool get() {
@@ -962,44 +1009,6 @@ public:
   }
 };
 
-void test() {
-  using namespace std;
-  using P = std::pair<uint32_t, uint32_t>;
-  vector<P> rob_orig;
-  vector<P> rob_next;
-  for (const auto &r : Robot::robots) {
-    rob_orig.push_back(r.getCurPos());
-    rob_next.push_back(r.getNextPos());
-  }
-
-  set<int> notgoids;
-
-  for (int i = 0; i < ROBOT_MAX; i++) {
-    for (int j = 0; j < ROBOT_MAX; j++) {
-      if (i >= j)
-        continue;
-      auto iori = rob_orig[i];
-      auto inex = rob_next[i];
-
-      auto jori = rob_orig[j];
-      auto jnex = rob_next[j];
-
-      if (jnex == inex) { // 撞
-        notgoids.insert(i);
-        notgoids.insert(j);
-      } else if (iori == jnex and inex == jori) { // 对撞
-        notgoids.insert(i);
-        notgoids.insert(j);
-      }
-    }
-  }
-  vector<P> notgo;
-  for (auto &r : Robot::robots) {
-    if (not notgoids.count(r._id)) {
-      notgo.push_back(rob_next[r._id]);
-    }
-  }
-}
 // std::array<Robot, ROBOT_MAX> robots;
 
 // 实际上把给货物分配港口,分配机器人的活都干了
@@ -1531,15 +1540,25 @@ void robotsUpdate() {
     }
   }
 
+  for (const auto &r : Robot::robots) {
+    Robot::next_posi[r._id] = r.getNextPos();
+  }
+
   {
     for (auto [sc, rid] : robots_priority) {
-      if (robs_do_action_flags[rid])
-        continue;
+      // if (robs_do_action_flags[rid])
+      // continue;
       auto &&rob = Robot::robots[rid];
-      rob.move();
-    }
 
-    unsetAllBarriers();
+      if (rob._status == Robot::Status::useless)
+        continue;
+
+      // rob.move();
+      Robot::caller_move2.push_back(rid);
+      rob.move2(false);
+      Robot::caller_move2.pop_back();
+    }
+    // unsetAllBarriers();
   }
 }
 
