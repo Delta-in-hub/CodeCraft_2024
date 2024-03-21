@@ -3,10 +3,10 @@
 default: bin
 
 bin: main.cpp
-	g++ -o build/main *.cpp -std=c++17 -O2 -Wall -Wextra -Werror -DNDEBUG
+	g++ -o build/main *.cpp -std=c++17 -march=native -Ofast
 
 debug: main.cpp
-	g++ -o build/main *.cpp -std=c++17 -g -Og -Wall -Wextra -Werror
+	g++ -o build/main *.cpp -std=c++17 -march=native -g -Og
 
 ifeq ($(1),)
   ARG1 = "maps/map1.txt"
@@ -15,7 +15,7 @@ else
 endif
 
 run: bin
-	LinuxReleasev1.2/PreliminaryJudge build/main -m $(ARG1)
+	LinuxReleasev1.2/PreliminaryJudge -l ERR build/main -m $(ARG1)
 
 clean:
 	rm -rf build/main *.zip

@@ -22,4 +22,4 @@ endif()
 file(GLOB SRC_FILES "*.cpp")
 ADD_EXECUTABLE(main ${SRC_FILES})
 
-target_compile_definitions(main PRIVATE NDEBUG)  # 设置预定义宏MY_DEFINE
+# target_compile_definitions(main PRIVATE NDEBUG)  # 设置预定义宏MY_DEFINE

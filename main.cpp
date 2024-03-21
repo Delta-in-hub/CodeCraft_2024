@@ -13,6 +13,8 @@
 #include <memory>
 #include <queue>
 #include <random>
+#include <set>
+#include <sys/types.h>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -127,7 +129,9 @@ public:
   float _score;
 
   bool isAvailable() const {
-    if (getCurrentFrame() >= _disappear_frame and not _taken)
+    if (getCurrentFrame() >= _disappear_frame)
+      return false;
+    if (_taken)
       return false;
     return true;
   }
@@ -330,9 +334,16 @@ public:
     };
   */
 
-  static bool isMoveAble(uint32_t x, uint32_t y) {
+  static bool isOutOfRange(uint32_t x, uint32_t y) {
     if (unlikely(x >= MAP_X_AXIS_MAX or y >= MAP_Y_AXIS_MAX))
+      return true;
+    return false;
+  }
+
+  static bool isMoveAble(uint32_t x, uint32_t y) {
+    if (isOutOfRange(x, y))
       return false;
+
     switch (_grids[x][y]._type) {
     case Type::berth:
     case Type::space:
@@ -636,7 +647,6 @@ public:
           // assert(idx < 4);
           x += _sdir[idx][0];
           y += _sdir[idx][1];
-          // assert(isMoveAble(x, y));
           cnt++;
         }
         assert(cnt == step);
@@ -654,12 +664,26 @@ public:
       for (int i = 0; i < 4; i++) {
         uint16_t nx = x + _sdir[i][0];
         uint16_t ny = y + _sdir[i][1];
-        if (isMoveAble(nx, ny) and not inQueue[nx][ny]) {
+        if (isOutOfRange(nx, ny))
+          continue;
+        if (inQueue[nx][ny])
+          continue;
+
+        if (isMoveAble(nx, ny)) {
           road[nx][ny] = reverse(static_cast<Direction>(i));
           assert(road[nx][ny] != Direction::none);
           pq.push({nx, ny, step + 1});
           // assert(inQueue[nx][ny] == false);
           inQueue[nx][ny] = true;
+        } else if (to.first == nx and to.second == ny) {
+          // 目标点被优先级高的机器人设为了barrier
+          if (step > 1) {
+            road[nx][ny] = reverse(static_cast<Direction>(i));
+            pq.push({nx, ny, step + 1});
+            inQueue[nx][ny] = true;
+          } else {
+            return {Direction::none, step + 1};
+          }
         }
       }
     }
@@ -672,6 +696,20 @@ public:
     assert(bid < BERTH_MAX);
     const auto &bert = berths[bid];
     return {bert._x, bert._y};
+  }
+
+  static Direction getDirection(std::pair<uint32_t, uint32_t> old,
+                                std::pair<uint32_t, uint32_t> newp) {
+    if (old == newp)
+      return Direction::none;
+    for (int i = 0; i < 4; i++) {
+      std::pair<uint32_t, uint32_t> np = old;
+      np.first += _sdir[i][0];
+      np.second += _sdir[i][1];
+      if (np == newp)
+        return static_cast<Direction>(i);
+    }
+    return Direction::none;
   }
 };
 
@@ -701,6 +739,9 @@ void unsetAllBarriers() {
   robotsAsBarrier.clear();
 }
 
+static inline bool isThereARobotNow(uint32_t x, uint32_t y);
+std::pair<uint32_t, uint32_t> robots_originp[ROBOT_MAX];
+
 class Robot {
 public:
   uint32_t _id;
@@ -722,6 +763,17 @@ public:
   uint32_t _carry_cargo_id; // -1 表示机器人尚未装货, 或则表示装着 [id] 货物
 
   float _score;
+
+  static std::array<Robot, ROBOT_MAX> robots;
+
+  static uint32_t isThereARobotNow(uint32_t x, uint32_t y) {
+    auto cnt = std::find_if(
+        begin(Robot::robots), end(Robot::robots),
+        [x, y](const Robot &r) { return r._x == x and r._y == y; });
+    if (likely(cnt == end(robots)))
+      return -1;
+    return cnt->_id;
+  }
 
   bool isWithCargo() const { return _carryStatus == CarryStatus::carrying; }
 
@@ -745,16 +797,18 @@ public:
   bool isGoingToCargo() const { return !isWithCargo(); }
 
   // 随时随地可以pull
-  void pull() {
+  bool pull() {
     // if (not isWithCargo())
     //   return;
 
     int bid = Map::getBerthId(_x, _y);
     if (bid == -1)
-      return;
+      return false;
 
     if (not isWithCargo())
-      return;
+      return false;
+
+    assert(_carry_cargo_id != (uint32_t)-1);
 
     auto &bert = berths[bid];
     bert.loadCargo({cargos[_carry_cargo_id]._price, _carry_cargo_id});
@@ -771,13 +825,15 @@ public:
     assert(_id < ROBOT_MAX);
     robots_actions.push_back(
         {RobotAction::ActionType::pull, {static_cast<uint8_t>(_id), 0}});
+    return true;
   }
 
-  bool move() {
-    // pull();
+  std::pair<uint32_t, uint32_t> getCurPos() const { return {_x, _y}; }
+
+  std::pair<uint32_t, uint32_t> getNextPos() const {
 
     if (not isWithCargo() and _target_cargo_id == static_cast<uint32_t>(-1)) {
-      return false;
+      return getCurPos();
     }
 
     uint32_t tx, ty;
@@ -797,10 +853,8 @@ public:
     auto [direction, distance] = Map::aStarSearch({_x, _y}, {tx, ty});
 
     if (direction == Direction::none) { // 无路可走
-      return false;
+      return getCurPos();
     }
-
-    setBarrier(_x, _y);
 
     uint32_t d = static_cast<uint32_t>(direction);
 
@@ -809,15 +863,76 @@ public:
 
     assert(Map::isMoveAble(nx, ny));
 
-    setBarrier(nx, ny);
+    return {nx, ny};
+  }
+
+  // {Direction, robot id}
+  std::vector<std::pair<Direction, uint32_t>> robotsAroundMe() const {
+    std::vector<std::pair<Direction, uint32_t>> ret;
+    for (int i = 0; i < 4; i++) {
+      auto np = this->getCurPos();
+      np.first += Map::_sdir[i][0];
+      np.second += Map::_sdir[i][1];
+      if (unlikely(Map::isOutOfRange(np.first, np.second)))
+        continue;
+      auto rid = isThereARobotNow(np.first, np.second);
+      if (likely(rid == -1))
+        continue;
+      ret.push_back({static_cast<Direction>(i), rid});
+    }
+    return ret;
+  }
+
+  Direction randomGoD(const std::vector<std::pair<uint32_t, uint32_t>> &notgo) {
+    const auto &ra = getRandomDir();
+    for (auto i : ra) {
+      auto dir = static_cast<Direction>(i);
+      if (dir == Direction::none)
+        continue;
+      auto nx = _x + Map::_sdir[i][0];
+      auto ny = _y + Map::_sdir[i][1];
+      if (not Map::isMoveAble(nx, ny))
+        continue;
+      decltype(notgo.back()) np = {nx, ny};
+      if (std::find(begin(notgo), end(notgo), np) == end(notgo))
+        return dir;
+    }
+    return Direction::none;
+  }
+
+  bool move(Direction dir) {
+    if (dir == Direction::none)
+      return false;
+
+    auto nx = _x + Map::_sdir[static_cast<uint32_t>(dir)][0];
+    auto ny = _y + Map::_sdir[static_cast<uint32_t>(dir)][1];
+
+    assert(Map::isMoveAble(nx, ny));
 
     this->_x = nx;
     this->_y = ny;
 
     robots_actions.push_back(
         {RobotAction::ActionType::move,
-         {static_cast<uint8_t>(_id), static_cast<uint8_t>(direction)}});
+         {static_cast<uint8_t>(_id), static_cast<uint8_t>(dir)}});
     return true;
+  }
+
+  bool _already_moved;
+  void move2() {
+    if (_already_moved)
+      return;
+    auto p = getNextPos();
+    auto dir = Map::getDirection(getCurPos(), p);
+    int rid = isThereARobotNow(p.first, p.second);
+    if (rid != -1){
+      
+    }
+      ;
+    
+      ;
+
+    _already_moved = true;
   }
 
   bool get() {
@@ -829,10 +944,15 @@ public:
     if (not(_x == cargo._origin_x and _y == cargo._origin_y))
       return false;
 
+    assert(_carry_cargo_id == (uint32_t)-1);
+    assert(_carryStatus == CarryStatus::empty);
+
     _carry_cargo_id = _target_cargo_id;
     _target_cargo_id = -1;
     _score = cargo._score;
     _carryStatus = CarryStatus::carrying;
+
+    assert(cargo._taken == false);
 
     cargo._taken = true;
 
@@ -842,7 +962,45 @@ public:
   }
 };
 
-std::array<Robot, ROBOT_MAX> robots;
+void test() {
+  using namespace std;
+  using P = std::pair<uint32_t, uint32_t>;
+  vector<P> rob_orig;
+  vector<P> rob_next;
+  for (const auto &r : Robot::robots) {
+    rob_orig.push_back(r.getCurPos());
+    rob_next.push_back(r.getNextPos());
+  }
+
+  set<int> notgoids;
+
+  for (int i = 0; i < ROBOT_MAX; i++) {
+    for (int j = 0; j < ROBOT_MAX; j++) {
+      if (i >= j)
+        continue;
+      auto iori = rob_orig[i];
+      auto inex = rob_next[i];
+
+      auto jori = rob_orig[j];
+      auto jnex = rob_next[j];
+
+      if (jnex == inex) { // 撞
+        notgoids.insert(i);
+        notgoids.insert(j);
+      } else if (iori == jnex and inex == jori) { // 对撞
+        notgoids.insert(i);
+        notgoids.insert(j);
+      }
+    }
+  }
+  vector<P> notgo;
+  for (auto &r : Robot::robots) {
+    if (not notgoids.count(r._id)) {
+      notgo.push_back(rob_next[r._id]);
+    }
+  }
+}
+// std::array<Robot, ROBOT_MAX> robots;
 
 // 实际上把给货物分配港口,分配机器人的活都干了
 class CargoPqItem {
@@ -871,7 +1029,7 @@ public:
   // else return manhattan distance
   uint32_t distanceToRobot(uint32_t rid) const {
     const auto &cargo = cargos[_id];
-    const auto &robo = robots[rid];
+    const auto &robo = Robot::robots[rid];
     if (unlikely(not Map::isConnected({cargo._origin_x, cargo._origin_y},
                                       {robo._x, robo._y})))
       return -1;
@@ -892,7 +1050,7 @@ public:
   std::vector<std::pair<uint32_t, uint32_t>>
   distToRobots(bool sorted = true) const {
     std::vector<std::pair<uint32_t, uint32_t>> ret;
-    for (auto &&robot : robots) {
+    for (auto &&robot : Robot::robots) {
       if (unlikely(robot._status == Robot::Status::useless))
         continue;
       int dis = this->distanceToRobot(robot._id);
@@ -1021,9 +1179,9 @@ uint32_t frameInput() {
   scanf("%u %lu", &frame_id, &money);
 
   assert(frame_id == frame_current);
-  if (frame_id != frame_current) {
-    std::abort();
-  }
+  // if (frame_id != frame_current) {
+  //   // std::abort();
+  // }
 
   frame_current = frame_id;
 
@@ -1054,33 +1212,40 @@ uint32_t frameInput() {
     // x,y 机器人所在位置坐标
     // status:  0 表示恢复状态,1 表示正常运行状态
     scanf("%u %u %u %u", &carryflag, &x, &y, &status);
-    robots[id]._id = id;
-    robots[id]._x = x;
-    robots[id]._y = y;
-    // robots[id]._already_moved = false;
+    Robot::robots[id]._id = id;
+    Robot::robots[id]._x = x;
+    Robot::Robot::robots[id]._y = y;
+    // Robot::robots[id]._already_moved = false;
 
     if (unlikely(getCurrentFrame() < 2)) {
-      robots[id]._score = 0;
-      robots[id]._carryStatus = Robot::CarryStatus::empty;
-      robots[id]._target_cargo_id = -1;
-      robots[id]._carry_cargo_id = -1;
+      Robot::robots[id]._score = 0;
+      Robot::robots[id]._carryStatus = Robot::CarryStatus::empty;
+      Robot::robots[id]._target_cargo_id = -1;
+      Robot::robots[id]._carry_cargo_id = -1;
     }
 
     if (unlikely(not Map::isConnectedToAnyBerth(x, y)))
-      robots[id]._status = Robot::Status::useless;
+      Robot::robots[id]._status = Robot::Status::useless;
     else
-      robots[id]._status = static_cast<Robot::Status>(status);
+      Robot::robots[id]._status = static_cast<Robot::Status>(status);
 
     if (carryflag == 0) {
-      robots[id]._carryStatus = Robot::CarryStatus::empty;
-      robots[id]._carry_cargo_id = -1;
-    } else if (carryflag == 1) {
-      if (robots[id]._carry_cargo_id == -1) {
-        robots[id]._carryStatus = Robot::CarryStatus::empty;
-      }
 
-      robots[id]._carryStatus = Robot::CarryStatus::carrying;
-    } // 错误情况，重置机器人
+      assert(Robot::robots[id]._carryStatus == Robot::CarryStatus::empty);
+
+      Robot::robots[id]._carryStatus = Robot::CarryStatus::empty;
+      Robot::robots[id]._carry_cargo_id = -1;
+
+    } else if (carryflag == 1) {
+      // if (Robot::robots[id]._carry_cargo_id == -1) {
+      //   Robot::robots[id]._carryStatus = Robot::CarryStatus::empty;
+      // }
+      // 本地状态还没拿到货, 评测机认为拿到货了
+      assert(Robot::robots[id]._carryStatus == Robot::CarryStatus::carrying);
+      assert(Robot::robots[id]._carry_cargo_id != (uint32_t)-1); // ! bug here
+
+      Robot::robots[id]._carryStatus = Robot::CarryStatus::carrying;
+    }
   }
 
   while (_idx < cargos.size()) {
@@ -1097,6 +1262,11 @@ uint32_t frameInput() {
     ships[id]._id = id;
     ships[id]._status = static_cast<Ship::Status>(status);
     ships[id]._berth_id = berth_id;
+
+    if (status == 1 and berth_id != -1) {
+      assert(berths[berth_id].curShip().second == id);
+    }
+
     if (status == 1 and berth_id == -1) {
       ships[id].clear();
     }
@@ -1278,9 +1448,10 @@ void shipsUpdate() {
 
 void robotsUpdate() {
 
-  std::unordered_set<uint32_t> robs_avaiable;
+  static std::unordered_set<uint32_t> robs_avaiable;
+  robs_avaiable.clear();
 
-  for (const auto &rob : robots) {
+  for (const auto &rob : Robot::robots) {
     if (rob._status != Robot::Status::normal)
       continue;
     if (rob._target_cargo_id != static_cast<uint32_t>(-1)) // 已经被分配了
@@ -1292,7 +1463,8 @@ void robotsUpdate() {
   static std::vector<CargoPqItem> _tmp;
   _tmp.reserve(FRAME_MAX);
 
-  // std::cerr << cargos_pq.size() << " " << robs_avaiable.size() << std::endl;
+  // std::cerr << cargos_pq.size() << " " << robs_avaiable.size() <<
+  // std::endl;
 
   while ((not cargos_pq.empty()) and robs_avaiable.size()) {
     auto citem = cargos_pq.top();
@@ -1312,7 +1484,7 @@ void robotsUpdate() {
       if (robs_avaiable.count(rid)) { // 可以分配
         dispatched = true;
         robs_avaiable.erase(rid);
-        auto &rob = robots[rid];
+        auto &rob = Robot::robots[rid];
         rob._target_cargo_id = c._id;
         if (rob._carryStatus == Robot::CarryStatus::empty) {
           rob._score = c._score;
@@ -1337,31 +1509,37 @@ void robotsUpdate() {
   robots_priority.reserve(ROBOT_MAX);
   robots_priority.clear();
 
-  for (auto &&rob : robots) {
+  for (auto &&rob : Robot::robots) {
     robots_priority.push_back({rob._score, rob._id});
   }
   std::sort(std::rbegin(robots_priority), std::rend(robots_priority));
 
-  {
-    for (auto [sc, rid] : robots_priority) {
-      auto &&rob = robots[rid];
-      rob.move();
-    }
-
-    unsetAllBarriers();
-  }
+  static bool robs_do_action_flags[ROBOT_MAX];
+  memset(robs_do_action_flags, 0, sizeof(robs_do_action_flags));
 
   {
     // 装货物，卸货
     for (auto [sc, rid] : robots_priority) {
-      auto &rob = robots[rid];
+      auto &rob = Robot::robots[rid];
       if (rob.isInBerth()) {
+        // robs_do_action_flags[rid] = rob.pull();
         rob.pull();
-      }
-      if (rob.canGetCargo()) {
+      } else if (rob.canGetCargo()) {
+        // robs_do_action_flags[rid] = rob.get();
         rob.get();
       }
     }
+  }
+
+  {
+    for (auto [sc, rid] : robots_priority) {
+      if (robs_do_action_flags[rid])
+        continue;
+      auto &&rob = Robot::robots[rid];
+      rob.move();
+    }
+
+    unsetAllBarriers();
   }
 }
 
