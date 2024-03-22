@@ -269,6 +269,13 @@ public:
 };
 std::array<Berth, BERTH_MAX> berths;
 
+uint32_t goVpNeedTime(uint32_t _bid) {
+  auto viabid = berth_govp_via[_bid];
+  if (viabid == _bid)
+    return berths[_bid]._time;
+  return FRAME_SHIP_SWITH_FROM_BERTH + berths[viabid]._time;
+}
+
 class Map {
 public:
   enum class Type : uint8_t {
@@ -878,7 +885,7 @@ public:
 
       uint32_t _bid;
 
-      if (getCurrentFrame() + 2000 >= FRAME_MAX) {
+      if (getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH * 3 >= FRAME_MAX) {
         auto &&bers = Map::connectedBerth(this->_x, this->_y);
         // bid ,dis
         using P = std::pair<uint32_t, uint32_t>;
@@ -1400,6 +1407,9 @@ uint32_t frameInput() {
       if (not bert._ships_via.empty()) {
         auto [frame, shid, tid] = berths[berth_id]._ships_via.front();
         if (shid == id) {
+          std::cerr << id << ' ';
+          std::cerr << bert._ships_here.front().first << ' '
+                    << bert._ships_here.front().second << std::endl;
           assert(bert.countShipsNow() == 0);
         } else {
           assert(berths[berth_id].curShip().second == id);
@@ -1524,7 +1534,7 @@ void shipsUpdate() {
         if (sh._id == shid)
           continue;
       }
-      ships_at_berth.push_back(sh._id); //! bugs
+      ships_at_berth.push_back(sh._id);
     }
   }
 
@@ -1604,8 +1614,10 @@ void shipsUpdate() {
       auto &berth = berths[ship._berth_id];
       auto cnt = berth.cargoGoOnBoardInOneFrame();
 
+      auto govptime = goVpNeedTime(berth._id);
+
       if (ship._size == Ship::capacity or
-          getCurrentFrame() + berth._time + 1 >= FRAME_MAX) {
+          getCurrentFrame() + govptime + 1 >= FRAME_MAX) {
         berth.leaveShip();
 
         auto nowbid = ship._berth_id;
@@ -1619,11 +1631,12 @@ void shipsUpdate() {
           viab._ships_via.push_back(
               {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, shid, -1});
         }
+
         continue;
       }
 
       if (cnt > 0) {
-        if (getCurrentFrame() + 2000 >= FRAME_MAX) {
+        if (getCurrentFrame() + govptime * 3 + 10 >= FRAME_MAX) {
           ship._free_frame = 0;
         }
         continue;
@@ -1656,19 +1669,19 @@ void shipsUpdate() {
             viab._ships_via.push_back(
                 {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, shid, -1});
           }
-
+          berth.leaveShip();
         } else {
           auto &target_bert = berths[target];
-          if (getCurrentFrame() + target_bert._time +
-                  FRAME_SHIP_SWITH_FROM_BERTH >=
+          auto govptime1 = goVpNeedTime(target);
+          if (getCurrentFrame() + govptime1 + FRAME_SHIP_SWITH_FROM_BERTH >=
               FRAME_MAX) {
             continue;
           }
           ship.ship(target);
           target_bert.loadShip(
               {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, ship._id});
+          berth.leaveShip();
         }
-        berth.leaveShip();
       }
     }
   }
