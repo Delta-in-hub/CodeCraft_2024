@@ -885,7 +885,11 @@ public:
 
       uint32_t _bid;
 
-      if (getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH * 3 >= FRAME_MAX) {
+      if (getCurrentFrame() <= 1) {
+        auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
+        int idx = this->_id % bers.size();
+        _bid = bers[idx].first;
+      } else if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
         auto &&bers = Map::connectedBerth(this->_x, this->_y);
         // bid ,dis
         using P = std::pair<uint32_t, uint32_t>;
@@ -1229,8 +1233,13 @@ public:
       return std::numeric_limits<float>::min();
 
     const float price = cargo._price;
+    float sc;
     // const float sc = price / (nb_dis + avg_rob + nb_time);
-    const float sc = (std::exp(price / 200)) / (nb_dis + avg_rob);
+    if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
+      sc = (std::exp(price / 200)) / (avg_rob);
+    } else {
+      sc = (std::exp(price / 200)) / (nb_dis * 0.5 + avg_rob * 1.5);
+    }
     cargo._score = sc;
     return sc;
   }
@@ -1608,7 +1617,9 @@ void shipsUpdate() {
   berth_candidates.clear();
 
   if (likely(not ships_at_berth.empty())) {
+
     const uint32_t free_upbound = getRandom(50, 100);
+
     for (const auto shid : ships_at_berth) {
       auto &ship = ships[shid];
       auto &berth = berths[ship._berth_id];
@@ -1636,7 +1647,7 @@ void shipsUpdate() {
       }
 
       if (cnt > 0) {
-        if (getCurrentFrame() + govptime * 3 + 10 >= FRAME_MAX) {
+        if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
           ship._free_frame = 0;
         }
         continue;
@@ -1657,7 +1668,17 @@ void shipsUpdate() {
         auto maxp =
             std::max_element(begin(berth_candidates), end(berth_candidates));
 
-        const int target = maxp->_bid;
+        int target = maxp->_bid;
+
+        if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
+          if (target == -1) {
+            berth_candidates.pop_back();
+            maxp = std::max_element(begin(berth_candidates),
+                                    end(berth_candidates));
+            target = maxp->_bid;
+          }
+        }
+
         if (target == -1) { // go to virtual point
           auto nowbid = ship._berth_id;
           auto viabid = berth_govp_via[nowbid];
@@ -1763,7 +1784,7 @@ void robotsUpdate() {
   for (auto &&rob : Robot::robots) {
     float __sc = rob._score;
     if (rob._carryStatus == Robot::CarryStatus::carrying) { // 拿货的优先级高
-      if (getCurrentFrame() + 3000 >= FRAME_MAX) {
+      if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
         __sc += 1000000;
       }
     }
