@@ -3,6 +3,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -830,10 +831,12 @@ public:
 
   std::pair<uint32_t, uint32_t> getCurPos() const { return {_x, _y}; }
 
+  uint32_t _robot_carry_cnt;
+
   std::pair<uint32_t, uint32_t> getNextPos() const {
 
     if (not isWithCargo() and _target_cargo_id == static_cast<uint32_t>(-1)) {
-      return getCurPos();
+      return getCurPos(); // ! bug
     }
 
     uint32_t tx, ty;
@@ -844,8 +847,27 @@ public:
       ty = c._origin_y;
     } else {
       const auto &c = cargos[_carry_cargo_id];
-      const auto tbid = c._berth_id;
-      auto [___x, ___y] = Map::getBerthPosition(tbid);
+
+      uint32_t _bid;
+
+      if (getCurrentFrame() + 3000 >= FRAME_MAX) {
+        auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
+        int idx = this->_id % bers.size();
+        idx %= SHIP_MAX;
+        _bid = bers[idx].first;
+      } else {
+        if (_robot_carry_cnt % 10 == 0) {
+          auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
+          int idx = this->_id % bers.size();
+          _bid = bers[idx].first;
+        } else {
+          auto [_dis, ___bid] = Map::nearestBerth(this->_x, this->_y);
+          _bid = ___bid;
+        }
+      }
+
+      auto [___x, ___y] = Map::getBerthPosition(_bid);
+
       tx = ___x + ((c._id / 4) % 4);
       ty = ___y + ((c._id % 4));
     }
@@ -961,7 +983,8 @@ public:
             return this->move(rdir);
           }
         }
-        std::abort();
+        // std::abort();
+        // assert(false);
         return false; // 死锁了
       } else {        // tid 不是他的外层
         auto &trb = robots[tid];
@@ -978,7 +1001,8 @@ public:
     }
 
     // Never reach here
-    std::abort();
+    assert(false);
+    // std::abort();
     return false;
   }
 
@@ -987,6 +1011,9 @@ public:
       return false;
 
     auto &cargo = cargos[_target_cargo_id];
+
+    if (not cargo.isAvailable())
+      return false;
 
     if (not(_x == cargo._origin_x and _y == cargo._origin_y))
       return false;
@@ -1002,7 +1029,7 @@ public:
     assert(cargo._taken == false);
 
     cargo._taken = true;
-
+    _robot_carry_cnt++;
     robots_actions.push_back(
         {RobotAction::ActionType::get, {static_cast<uint8_t>(_id), 0}});
     return true;
@@ -1010,6 +1037,10 @@ public:
 };
 
 // std::array<Robot, ROBOT_MAX> robots;
+
+std::array<Robot, ROBOT_MAX> Robot::robots;
+std::array<std::pair<uint32_t, uint32_t>, ROBOT_MAX> Robot::next_posi;
+std::vector<uint32_t> Robot::caller_move2;
 
 // 实际上把给货物分配港口,分配机器人的活都干了
 class CargoPqItem {
@@ -1116,7 +1147,7 @@ public:
         Map::getDistanceToBerth(cargo._origin_x, cargo._origin_y, nb_id);
     const auto nb_time = berths[nb_id]._time;
 
-    const float avg_rob = this->avgDistToRobots();
+    const float avg_rob = this->avgDistToRobots(ROBOT_MAX / 2);
     remain_frame -= (nb_dis + avg_rob); // ! 最好用最近的机器人的距离
     if (remain_frame < 0)
       return std::numeric_limits<float>::min();
@@ -1188,9 +1219,6 @@ uint32_t frameInput() {
   scanf("%u %lu", &frame_id, &money);
 
   assert(frame_id == frame_current);
-  // if (frame_id != frame_current) {
-  //   // std::abort();
-  // }
 
   frame_current = frame_id;
 
@@ -1224,7 +1252,7 @@ uint32_t frameInput() {
     Robot::robots[id]._id = id;
     Robot::robots[id]._x = x;
     Robot::Robot::robots[id]._y = y;
-    // Robot::robots[id]._already_moved = false;
+    Robot::robots[id]._already_moved = false;
 
     if (unlikely(getCurrentFrame() < 2)) {
       Robot::robots[id]._score = 0;
@@ -1461,7 +1489,7 @@ void robotsUpdate() {
   robs_avaiable.clear();
 
   for (const auto &rob : Robot::robots) {
-    if (rob._status != Robot::Status::normal)
+    if (rob._status == Robot::Status::recovering)
       continue;
     if (rob._target_cargo_id != static_cast<uint32_t>(-1)) // 已经被分配了
       continue;
@@ -1485,8 +1513,19 @@ void robotsUpdate() {
       continue;
 
     bool dispatched = false;
-    const auto &nrs = citem._nearest_robs;
-    constexpr unsigned long bestof = ROBOT_MAX / 2;
+    auto &nrs = citem._nearest_robs;
+
+    // {
+    //   for (auto &&item : nrs) {
+    //     // dis ,rid
+    //     uint32_t cx = c._origin_x;
+    //     uint32_t cy = c._origin_y;
+
+    //     // item.first +=
+    //   }
+    // }
+
+    constexpr unsigned long bestof = ROBOT_MAX / 5;
     const uint32_t cnt = std::min(bestof, nrs.size());
     for (uint32_t i = 0; i < cnt; i++) {
       const auto [dis, rid] = nrs[i];
@@ -1519,12 +1558,37 @@ void robotsUpdate() {
   robots_priority.clear();
 
   for (auto &&rob : Robot::robots) {
-    robots_priority.push_back({rob._score, rob._id});
+    float __sc = rob._score;
+    if (rob._carryStatus == Robot::CarryStatus::carrying) { // 拿货的优先级高
+      if (getCurrentFrame() + 3000 >= FRAME_MAX) {
+        __sc += 1000000;
+      }
+    }
+
+    robots_priority.push_back({__sc, rob._id});
   }
   std::sort(std::rbegin(robots_priority), std::rend(robots_priority));
 
   static bool robs_do_action_flags[ROBOT_MAX];
   memset(robs_do_action_flags, 0, sizeof(robs_do_action_flags));
+
+  {
+    for (auto [sc, rid] : robots_priority) {
+      auto &rob = Robot::robots[rid];
+      if (rob._target_cargo_id == static_cast<uint32_t>(-1))
+        continue;
+      auto &c = cargos[rob._target_cargo_id];
+
+      auto mdis =
+          Map::manhattanDistance({rob._x, rob._y}, {c._origin_x, c._origin_y});
+
+      int remain = c._disappear_frame - getCurrentFrame();
+
+      if (remain <= mdis) {
+        rob._target_cargo_id = -1;
+      }
+    }
+  }
 
   {
     // 装货物，卸货
