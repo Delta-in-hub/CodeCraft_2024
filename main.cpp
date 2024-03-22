@@ -27,6 +27,8 @@ uint32_t frame_current = 1;
 
 uint32_t all_values_get, all_values_pull;
 
+std::array<uint32_t, BERTH_MAX> berth_govp_via;
+
 uint32_t getCurrentFrame() { return frame_current; }
 
 // Order is IMPORTANT!
@@ -203,6 +205,9 @@ public:
       _ships_here; // 该泊位的船只; {arrive_frame,ship id}
   std::deque<std::pair<uint32_t, uint32_t>>
       _cargos_here; // 该泊位的货物; {price , cargo id}
+
+  std::deque<std::tuple<uint32_t, uint32_t, uint32_t>>
+      _ships_via; // 借路该泊位去 target ; {arrive_frame,ship id,target id}
 
   // <arrive_frame,ship id> Ship arrives here
   void loadShip(std::pair<uint32_t, uint32_t> sh) { _ships_here.push_back(sh); }
@@ -873,7 +878,7 @@ public:
 
       uint32_t _bid;
 
-      if (getCurrentFrame() + 5000 >= FRAME_MAX) {
+      if (getCurrentFrame() + 2000 >= FRAME_MAX) {
         auto &&bers = Map::connectedBerth(this->_x, this->_y);
         // bid ,dis
         using P = std::pair<uint32_t, uint32_t>;
@@ -1218,7 +1223,7 @@ public:
 
     const float price = cargo._price;
     // const float sc = price / (nb_dis + avg_rob + nb_time);
-    const float sc = price / (nb_dis + avg_rob);
+    const float sc = (std::exp(price / 200)) / (nb_dis + avg_rob);
     cargo._score = sc;
     return sc;
   }
@@ -1240,6 +1245,24 @@ public:
 // 所有在地图上还没有被拿的所有货物,可能包含过期的货物
 std::priority_queue<CargoPqItem> cargos_pq;
 // std::vector<CargoPqItem> cargo_pqs;
+
+void berth_init() {
+  auto p = std::min_element(
+      std::begin(berths), std::end(berths),
+      [](const Berth &lhs, const Berth &rhs) { return lhs._time < rhs._time; });
+
+  auto min_time = p->_time;
+  for (auto &berth : berths) {
+    if (min_time + FRAME_SHIP_SWITH_FROM_BERTH < berth._time) {
+      berth_govp_via[berth._id] = p->_id;
+      std::cerr << "berth_init: "
+                << " " << min_time << " " << p->_id << " " << berth._id << " "
+                << berth._time << std::endl;
+    } else {
+      berth_govp_via[berth._id] = berth._id;
+    }
+  }
+}
 
 void initialization() {
   cargos.reserve(10 * FRAME_MAX);
@@ -1265,6 +1288,8 @@ void initialization() {
 
     Map::processConnectedBerth(id);
   }
+
+  berth_init();
 
   // 船的容积,即最多能装的物品数。
   scanf("%u", &Ship::capacity);
@@ -1365,8 +1390,31 @@ uint32_t frameInput() {
     ships[id]._status = static_cast<Ship::Status>(status);
     ships[id]._berth_id = berth_id;
 
+    if (status == 2) {
+      std::cerr << "ship " << id << " is waiting at berth " << berth_id
+                << std::endl;
+    }
+
     if (status == 1 and berth_id != -1) {
-      assert(berths[berth_id].curShip().second == id);
+      const auto &bert = berths[berth_id];
+      if (not bert._ships_via.empty()) {
+        auto [frame, shid, tid] = berths[berth_id]._ships_via.front();
+        if (shid == id) {
+          assert(bert.countShipsNow() == 0);
+        } else {
+          assert(berths[berth_id].curShip().second == id);
+        }
+      }
+      if (bert.countShipsNow()) {
+        if (berths[berth_id].curShip().second != id) {
+          std::cerr << berth_id << ' ' << berths[berth_id].curShip().second
+                    << ' ' << id << std::endl;
+          auto [frame, shid, tid] = berths[berth_id]._ships_via.front();
+          std::cerr << frame_current << ' ' << frame << ' ' << shid << ' '
+                    << tid << std::endl;
+        }
+        assert(berths[berth_id].curShip().second == id);
+      }
     }
 
     if (status == 1 and berth_id == -1) {
@@ -1396,7 +1444,7 @@ public:
     const auto lhs_speed = lhs._velocity;
     const auto lhs_time = lhs._time;
 
-    return lhs_value / (lhs_cnt / lhs_speed + lhs_time * 2);
+    return lhs_value / (lhs_cnt / lhs_speed + lhs_time);
   }
 
   bool operator<(BerthForVirtualPoint r) const {
@@ -1415,11 +1463,12 @@ public:
     if (_bid == static_cast<uint32_t>(-1)) {
       const float cur_value = ship._values;
       const auto &bert = berths[ship._berth_id];
-      const auto bert_time = bert._time;
-      if (bert_time < FRAME_SHIP_SWITH_FROM_BERTH / 2)
-        return 100000;
-      else
-        return cur_value / bert_time;
+      auto viabid = berth_govp_via[ship._berth_id];
+      auto bert_time = bert._time;
+      if (viabid != ship._berth_id) {
+        bert_time = FRAME_SHIP_SWITH_FROM_BERTH + berths[viabid]._time;
+      }
+      return cur_value / bert_time;
       // return 0;
     }
 
@@ -1465,8 +1514,39 @@ void shipsUpdate() {
       continue;
     if (sh._berth_id == -1) // 在虚拟点
       ships_at_vp.push_back(sh._id);
-    else
-      ships_at_berth.push_back(sh._id);
+    else {
+      const auto &bert = berths[sh._berth_id];
+      if (not bert._ships_via.empty()) {
+        auto [frame, shid, tbid] = bert._ships_via.front();
+        std::cerr << "ships_at_berth : " << frame_current << ' ' << frame << ' '
+                  << bert._id << ' ' << shid << ' ' << tbid << ' ' << sh._id
+                  << std::endl;
+        if (sh._id == shid)
+          continue;
+      }
+      ships_at_berth.push_back(sh._id); //! bugs
+    }
+  }
+
+  for (auto &bert : berths) {
+    while (not bert._ships_via.empty()) {
+      auto [frame, shid, tbid] = bert._ships_via.front();
+      std::cerr << "shipsUpdate : " << frame_current << ' ' << frame << ' '
+                << bert._id << ' ' << shid << ' ' << tbid << std::endl;
+      if (getCurrentFrame() >= frame) {
+        bert._ships_via.pop_front();
+        if (tbid == -1) {
+          ships[shid].go();
+        } else {
+          ships[shid].ship(tbid);
+          // auto &bert = berths[tbid];
+          // bert.loadShip(
+          //     {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, shid});
+        }
+      } else {
+        break;
+      }
+    }
   }
 
   static std::vector<BerthForVirtualPoint> vp_candidates;
@@ -1495,9 +1575,20 @@ void shipsUpdate() {
         if (score <= 0) // Magic Number
           break;        // 船不动
 
-        ship.ship(target_bid);
         auto &bert = berths[target_bid];
-        bert.loadShip({getCurrentFrame() + bert._time, ship._id});
+        if (berth_govp_via[target_bid] == target_bid) {
+          ship.ship(target_bid);
+          bert.loadShip({getCurrentFrame() + bert._time, ship._id});
+        } else {
+          // 绕路
+          auto viabid = berth_govp_via[target_bid];
+          ship.ship(viabid);
+          auto time = berths[viabid]._time;
+          berths[viabid]._ships_via.push_back(
+              {getCurrentFrame() + time, shid, target_bid});
+          bert.loadShip(
+              {getCurrentFrame() + time + FRAME_SHIP_SWITH_FROM_BERTH, shid});
+        }
       }
     }
   }
@@ -1507,8 +1598,7 @@ void shipsUpdate() {
   berth_candidates.clear();
 
   if (likely(not ships_at_berth.empty())) {
-    const uint32_t free_upbound =
-        getRandom(100, FRAME_SHIP_SWITH_FROM_BERTH / 2);
+    const uint32_t free_upbound = getRandom(50, 100);
     for (const auto shid : ships_at_berth) {
       auto &ship = ships[shid];
       auto &berth = berths[ship._berth_id];
@@ -1516,13 +1606,24 @@ void shipsUpdate() {
 
       if (ship._size == Ship::capacity or
           getCurrentFrame() + berth._time + 1 >= FRAME_MAX) {
-        ship.go();
         berth.leaveShip();
+
+        auto nowbid = ship._berth_id;
+        if (berth_govp_via[nowbid] == nowbid) {
+          ship.go();
+        } else {
+          //
+          auto viabid = berth_govp_via[nowbid];
+          ship.ship(viabid);
+          auto &viab = berths[viabid];
+          viab._ships_via.push_back(
+              {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, shid, -1});
+        }
         continue;
       }
 
       if (cnt > 0) {
-        if (getCurrentFrame() + 5000 >= FRAME_MAX) {
+        if (getCurrentFrame() + 2000 >= FRAME_MAX) {
           ship._free_frame = 0;
         }
         continue;
@@ -1545,7 +1646,17 @@ void shipsUpdate() {
 
         const int target = maxp->_bid;
         if (target == -1) { // go to virtual point
-          ship.go();
+          auto nowbid = ship._berth_id;
+          auto viabid = berth_govp_via[nowbid];
+          if (viabid == nowbid) {
+            ship.go();
+          } else {
+            ship.ship(viabid);
+            auto &viab = berths[viabid];
+            viab._ships_via.push_back(
+                {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, shid, -1});
+          }
+
         } else {
           auto &target_bert = berths[target];
           if (getCurrentFrame() + target_bert._time +
