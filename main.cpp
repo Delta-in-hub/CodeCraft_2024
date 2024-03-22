@@ -868,21 +868,21 @@ public:
 
       uint32_t _bid;
 
-      if (getCurrentFrame() + 3000 >= FRAME_MAX) {
+      // if (getCurrentFrame() + 3000 >= FRAME_MAX) {
+      //   auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
+      //   int idx = this->_id % bers.size();
+      //   idx %= SHIP_MAX;
+      //   _bid = bers[idx].first;
+      // } else {
+      if (_robot_carry_cnt % FRAME_MAX == 0) {
         auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
         int idx = this->_id % bers.size();
-        idx %= SHIP_MAX;
         _bid = bers[idx].first;
       } else {
-        if (_robot_carry_cnt % 10 == 0) {
-          auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
-          int idx = this->_id % bers.size();
-          _bid = bers[idx].first;
-        } else {
-          auto [_dis, ___bid] = Map::nearestBerth(this->_x, this->_y);
-          _bid = ___bid;
-        }
+        auto [_dis, ___bid] = Map::nearestBerth(this->_x, this->_y);
+        _bid = ___bid;
       }
+      // }
 
       auto [___x, ___y] = Map::getBerthPosition(_bid);
 
@@ -1352,7 +1352,7 @@ public:
     const auto lhs_speed = lhs._velocity;
     const auto lhs_time = lhs._time;
 
-    return lhs_value / (lhs_cnt / lhs_speed + lhs_time);
+    return lhs_value / (lhs_cnt / lhs_speed + lhs_time * 2);
   }
 
   bool operator<(BerthForVirtualPoint r) const {
@@ -1375,7 +1375,8 @@ public:
       if (bert_time < FRAME_SHIP_SWITH_FROM_BERTH / 2)
         return 100000;
       else
-        return cur_value / bert_time;
+        return cur_value / (bert_time * 2);
+      // return 0;
     }
 
     const auto &bert = berths[_bid];
@@ -1446,8 +1447,8 @@ void shipsUpdate() {
         const auto target_bid = vp_candidates.back()._bid;
         const float score = vp_candidates.back().getScore();
         vp_candidates.pop_back();
-        if (score <= 1e-6) // Magic Number
-          break;           // 船不动
+        if (score <= 0) // Magic Number
+          break;        // 船不动
 
         ship.ship(target_bid);
         auto &bert = berths[target_bid];
@@ -1461,7 +1462,7 @@ void shipsUpdate() {
   berth_candidates.clear();
 
   if (likely(not ships_at_berth.empty())) {
-    const uint32_t free_upbound = getRandom(1, 50);
+    const uint32_t free_upbound = getRandom(50, 100);
     for (const auto shid : ships_at_berth) {
       auto &ship = ships[shid];
       auto &berth = berths[ship._berth_id];
