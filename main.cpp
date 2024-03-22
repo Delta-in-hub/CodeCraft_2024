@@ -556,6 +556,24 @@ public:
                           const std::pair<uint32_t, uint32_t> to) {
     const auto [fx, fy] = from;
     const auto [tx, ty] = to;
+
+    // bugs
+
+    auto ft = _grids[fx][fy]._type;
+    auto tt = _grids[tx][ty]._type;
+
+    if (ft == Map::Type::berth) {
+      auto fbid = _grids[fx][fy]._berth_id;
+      bool flag = Map::isConnectedToBerth(tx, ty, fbid);
+      return flag;
+    }
+
+    if (tt == Map::Type::berth) {
+      auto tbid = _grids[tx][ty]._berth_id;
+      bool flag = Map::isConnectedToBerth(fx, fy, tbid);
+      return flag;
+    }
+
     const auto &fdis = _grids[fx][fy]._dis;
     const auto &tdis = _grids[tx][ty]._dis;
     for (uint32_t i = 0; i < BERTH_MAX; i++) {
@@ -875,6 +893,9 @@ public:
     auto [direction, distance] = Map::aStarSearch({_x, _y}, {tx, ty});
 
     if (direction == Direction::none) { // 无路可走
+      std::cerr << this->_id << ' ' << _x << ' ' << _y;
+      std::cerr << ' ' << tx << ' ' << ty << std::endl;
+      // assert(0);  bugs
       return getCurPos();
     }
 
@@ -1147,7 +1168,7 @@ public:
         Map::getDistanceToBerth(cargo._origin_x, cargo._origin_y, nb_id);
     const auto nb_time = berths[nb_id]._time;
 
-    const float avg_rob = this->avgDistToRobots(ROBOT_MAX / 2);
+    const float avg_rob = this->avgDistToRobots(ROBOT_MAX / 5);
     remain_frame -= (nb_dis + avg_rob); // ! 最好用最近的机器人的距离
     if (remain_frame < 0)
       return std::numeric_limits<float>::min();
@@ -1351,7 +1372,10 @@ public:
       const float cur_value = ship._values;
       const auto &bert = berths[ship._berth_id];
       const auto bert_time = bert._time;
-      return cur_value / bert_time;
+      if (bert_time < FRAME_SHIP_SWITH_FROM_BERTH / 2)
+        return 100000;
+      else
+        return cur_value / bert_time;
     }
 
     const auto &bert = berths[_bid];
@@ -1422,7 +1446,7 @@ void shipsUpdate() {
         const auto target_bid = vp_candidates.back()._bid;
         const float score = vp_candidates.back().getScore();
         vp_candidates.pop_back();
-        if (score <= 1e-5) // Magic Number
+        if (score <= 1e-6) // Magic Number
           break;           // 船不动
 
         ship.ship(target_bid);
@@ -1513,7 +1537,7 @@ void robotsUpdate() {
       continue;
 
     bool dispatched = false;
-    auto &nrs = citem._nearest_robs;
+    const auto &nrs = citem._nearest_robs;
 
     // {
     //   for (auto &&item : nrs) {
@@ -1530,13 +1554,12 @@ void robotsUpdate() {
     for (uint32_t i = 0; i < cnt; i++) {
       const auto [dis, rid] = nrs[i];
       if (robs_avaiable.count(rid)) { // 可以分配
+        auto &rob = Robot::robots[rid];
         dispatched = true;
         robs_avaiable.erase(rid);
-        auto &rob = Robot::robots[rid];
         rob._target_cargo_id = c._id;
-        if (rob._carryStatus == Robot::CarryStatus::empty) {
+        if (rob._carryStatus == Robot::CarryStatus::empty)
           rob._score = c._score;
-        }
         break;
       }
     }
