@@ -25,6 +25,8 @@
 
 uint32_t frame_current = 1;
 
+uint32_t all_values_get, all_values_pull;
+
 uint32_t getCurrentFrame() { return frame_current; }
 
 // Order is IMPORTANT!
@@ -830,6 +832,9 @@ public:
     assert(_carry_cargo_id != (uint32_t)-1);
 
     auto &bert = berths[bid];
+
+    all_values_pull += cargos[_carry_cargo_id]._price;
+
     bert.loadCargo({cargos[_carry_cargo_id]._price, _carry_cargo_id});
 
     _carry_cargo_id = -1;
@@ -868,17 +873,48 @@ public:
 
       uint32_t _bid;
 
+      if (getCurrentFrame() + 5000 >= FRAME_MAX) {
+        auto &&bers = Map::connectedBerth(this->_x, this->_y);
+        // bid ,dis
+        using P = std::pair<uint32_t, uint32_t>;
+        std::sort(begin(bers), end(bers), [](const P p1, const P p2) {
+          float lhs_re = 0.5, rhs_re = 0.5;
+          uint32_t lhs_dis = p1.second + 1;
+          uint32_t rhs_dis = p2.second + 1;
+
+          {
+            auto &&bert = berths[p1.first];
+            if (bert.countShipsNow()) {
+              auto lhs_sid = bert.curShip().second;
+              auto &&lhs_s = ships[lhs_sid];
+              lhs_re = Ship::capacity - lhs_s._size;
+            }
+          }
+          {
+            auto &&bert = berths[p2.first];
+            if (bert.countShipsNow()) {
+              const auto rhs_sid = bert.curShip().second;
+              const auto &rhs_s = ships[rhs_sid];
+              rhs_re = Ship::capacity - rhs_s._size;
+            }
+          }
+          float lhs_sc = (float)lhs_re / lhs_dis;
+          float rhs_sc = (float)rhs_re / rhs_dis;
+          return lhs_sc < rhs_sc;
+        });
+        _bid = bers.back().first;
+      }
       // if (getCurrentFrame() + 3000 >= FRAME_MAX) {
       //   auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
       //   int idx = this->_id % bers.size();
       //   idx %= SHIP_MAX;
       //   _bid = bers[idx].first;
       // } else {
-      if (_robot_carry_cnt % FRAME_MAX == 0) {
-        auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
-        int idx = this->_id % bers.size();
-        _bid = bers[idx].first;
-      } else {
+      // if (_robot_carry_cnt % 1000 == 0) {
+      //   auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
+      //   int idx = this->_id % bers.size();
+      //   _bid = bers[idx].first;
+      else {
         auto [_dis, ___bid] = Map::nearestBerth(this->_x, this->_y);
         _bid = ___bid;
       }
@@ -1049,6 +1085,8 @@ public:
 
     assert(cargo._taken == false);
 
+    all_values_get += cargos[_carry_cargo_id]._price;
+
     cargo._taken = true;
     _robot_carry_cnt++;
     robots_actions.push_back(
@@ -1102,8 +1140,13 @@ public:
           cargo._origin_x, cargo._origin_y, withcargo._berth_id);
       return robo_to_berth + berth_to_cargo;
     } else {
+      int rd2b = Map::getDistanceToBerth(robo._x, robo._y, cargo._berth_id);
+      int cd2b = Map::getDistanceToBerth(cargo._origin_x, cargo._origin_y,
+                                         cargo._berth_id);
+
       return Map::manhattanDistance({cargo._origin_x, cargo._origin_y},
-                                    {robo._x, robo._y});
+                                    {robo._x, robo._y}) +
+             abs(rd2b - cd2b);
     }
   }
 
@@ -1174,7 +1217,8 @@ public:
       return std::numeric_limits<float>::min();
 
     const float price = cargo._price;
-    const float sc = price / (nb_dis + avg_rob + nb_time);
+    // const float sc = price / (nb_dis + avg_rob + nb_time);
+    const float sc = price / (nb_dis + avg_rob);
     cargo._score = sc;
     return sc;
   }
@@ -1375,13 +1419,14 @@ public:
       if (bert_time < FRAME_SHIP_SWITH_FROM_BERTH / 2)
         return 100000;
       else
-        return cur_value / (bert_time * 2);
+        return cur_value / bert_time;
       // return 0;
     }
 
     const auto &bert = berths[_bid];
     if (bert.countShips())
       return std::numeric_limits<float>::min();
+
     const float cur_value = ship._values;
     const auto remain_size = Ship::capacity - ship._size;
     const auto bert_cnt = bert.countCargosNow();
@@ -1462,7 +1507,8 @@ void shipsUpdate() {
   berth_candidates.clear();
 
   if (likely(not ships_at_berth.empty())) {
-    const uint32_t free_upbound = getRandom(50, 100);
+    const uint32_t free_upbound =
+        getRandom(100, FRAME_SHIP_SWITH_FROM_BERTH / 2);
     for (const auto shid : ships_at_berth) {
       auto &ship = ships[shid];
       auto &berth = berths[ship._berth_id];
@@ -1475,8 +1521,12 @@ void shipsUpdate() {
         continue;
       }
 
-      if (cnt > 0)
+      if (cnt > 0) {
+        if (getCurrentFrame() + 5000 >= FRAME_MAX) {
+          ship._free_frame = 0;
+        }
         continue;
+      }
 
       ship._free_frame++;
       if (ship._free_frame > free_upbound) {
@@ -1497,8 +1547,13 @@ void shipsUpdate() {
         if (target == -1) { // go to virtual point
           ship.go();
         } else {
-          ship.ship(target);
           auto &target_bert = berths[target];
+          if (getCurrentFrame() + target_bert._time +
+                  FRAME_SHIP_SWITH_FROM_BERTH >=
+              FRAME_MAX) {
+            continue;
+          }
+          ship.ship(target);
           target_bert.loadShip(
               {getCurrentFrame() + FRAME_SHIP_SWITH_FROM_BERTH, ship._id});
         }
@@ -1715,11 +1770,10 @@ int main() {
 
   for (; frame_current <= FRAME_MAX; ++frame_current) {
     frameInput();
-
     frameUpdate();
-
     frameOutput();
     frameDone();
   }
+  std::cerr << all_values_get << ' ' << all_values_pull << std::endl;
   return 0;
 }
