@@ -24,9 +24,7 @@
 #include <vector>
 
 uint32_t frame_current = 1;
-
 uint32_t barrier_cnt, space_cnt, ocean_cnt;
-
 uint32_t all_values_get, all_values_pull;
 
 std::array<uint32_t, BERTH_MAX> berth_govp_via;
@@ -333,13 +331,13 @@ public:
           break;
         case 'A':
           _grids[i][j]._type = Type::space;
+          space_cnt++;
           break;
         case 'B':
           _grids[i][j]._type = Type::berth;
           break;
         default:
           _grids[i][j]._type = Type::barrier;
-          barrier_cnt++;
           break;
         };
       }
@@ -766,6 +764,23 @@ const int Map::_sdir[4][2] = {{0, 1},  // 右
                               {-1, 0}, // 上
                               {1, 0}}; // 下
 
+Map::Type map_old[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
+static std::vector<std::pair<uint32_t, uint32_t>> robotsAsBarrier;
+
+void setBarrier(uint32_t x, uint32_t y) {
+  map_old[x][y] = Map::_grids[x][y]._type;
+
+  Map::_grids[x][y]._type = Map::Type::barrier;
+  robotsAsBarrier.push_back(std::make_pair(x, y));
+}
+
+void unsetAllBarriers() {
+  for (auto [x, y] : robotsAsBarrier) {
+    Map::_grids[x][y]._type = map_old[x][y];
+  }
+  robotsAsBarrier.clear();
+}
+
 int whichmap = 0;
 
 int whichMap() {
@@ -789,23 +804,6 @@ int whichMap() {
     return 2;
   else
     return 3;
-}
-
-Map::Type map_old[MAP_X_AXIS_MAX][MAP_Y_AXIS_MAX];
-static std::vector<std::pair<uint32_t, uint32_t>> robotsAsBarrier;
-
-void setBarrier(uint32_t x, uint32_t y) {
-  map_old[x][y] = Map::_grids[x][y]._type;
-
-  Map::_grids[x][y]._type = Map::Type::barrier;
-  robotsAsBarrier.push_back(std::make_pair(x, y));
-}
-
-void unsetAllBarriers() {
-  for (auto [x, y] : robotsAsBarrier) {
-    Map::_grids[x][y]._type = map_old[x][y];
-  }
-  robotsAsBarrier.clear();
 }
 
 std::pair<uint32_t, uint32_t> robots_originp[ROBOT_MAX];
@@ -897,7 +895,7 @@ public:
   std::pair<uint32_t, uint32_t> getNextPos() const {
 
     if (not isWithCargo() and _target_cargo_id == static_cast<uint32_t>(-1)) {
-      return getCurPos();
+      return getCurPos(); // ! bug
     }
 
     uint32_t tx, ty;
@@ -911,12 +909,11 @@ public:
 
       uint32_t _bid;
 
-      if (_robot_carry_cnt == -1 and whichmap != 1) {
+      if (getCurrentFrame() <= 1) {
         auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
         int idx = this->_id % bers.size();
         _bid = bers[idx].first;
       } else if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
-
         auto &&bers = Map::connectedBerth(this->_x, this->_y);
         // bid ,dis
         using P = std::pair<uint32_t, uint32_t>;
@@ -946,7 +943,18 @@ public:
           return lhs_sc < rhs_sc;
         });
         _bid = bers.back().first;
-      } else {
+      }
+      // if (getCurrentFrame() + 3000 >= FRAME_MAX) {
+      //   auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
+      //   int idx = this->_id % bers.size();
+      //   idx %= SHIP_MAX;
+      //   _bid = bers[idx].first;
+      // } else {
+      // if (_robot_carry_cnt % 1000 == 0) {
+      //   auto &&bers = Map::connectedBerth(this->_x, this->_y); // bid ,dis
+      //   int idx = this->_id % bers.size();
+      //   _bid = bers[idx].first;
+      else {
         auto [_dis, ___bid] = Map::nearestBerth(this->_x, this->_y);
         _bid = ___bid;
       }
@@ -1046,14 +1054,12 @@ public:
       _label3:
         std::vector<std::pair<uint32_t, Direction>> there_robots;
 
-        auto &&rnd = getRandomDir();
+        const auto &rnd = getRandomDir();
         for (auto d_ : rnd) {
           if (d_ == 4)
             continue;
           int i = d_;
-
           // for (int i = 0; i < 4; i++) {
-
           Direction tdir = static_cast<Direction>(i);
           uint32_t tnx = this->_x + Map::_sdir[i][0];
           uint32_t tny = this->_y + Map::_sdir[i][1];
@@ -1193,17 +1199,16 @@ public:
       int cd2b = Map::getDistanceToBerth(cargo._origin_x, cargo._origin_y,
                                          cargo._berth_id);
 
-      const auto man = Map::manhattanDistance(
-          {cargo._origin_x, cargo._origin_y}, {robo._x, robo._y});
+      auto man = Map::manhattanDistance({cargo._origin_x, cargo._origin_y},
+                                        {robo._x, robo._y});
 
-      const int abss = abs(rd2b - cd2b);
-      // if (whichmap == 1) {
-      //   return man;
-      // } else if (whichmap == 2) {
-      //   return man * 0.8 + abss * 1.2;
-      // } else {
+      auto abss = abs(rd2b - cd2b);
+
+      if (whichmap == 1) {
+        return man;
+      } else {
         return man + abss;
-      // }
+      }
     }
   }
 
@@ -1268,30 +1273,20 @@ public:
         Map::getDistanceToBerth(cargo._origin_x, cargo._origin_y, nb_id);
     const auto nb_time = berths[nb_id]._time;
 
-    const float avg_rob = this->avgDistToRobots(2);
+    const float avg_rob = this->avgDistToRobots(ROBOT_MAX / 5);
     remain_frame -= (nb_dis + avg_rob); // ! 最好用最近的机器人的距离
     if (remain_frame < 0)
       return std::numeric_limits<float>::min();
 
     const float price = cargo._price;
     float sc;
-    constexpr float Euler = 2.718281828;
     // const float sc = price / (nb_dis + avg_rob + nb_time);
     // if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
-    // sc = (std::exp(price / 200)) / (avg_rob);
+    // sc = (std::exp(price / 200)) / (avg_rob + nb_dis);
     // } else {
-    // sc = (std::exp(price / 200)) / (nb_dis + avg_rob);
-    // sc = price / (nb_dis + avg_rob);
     // sc = 1 / (1 + std::exp(-price));
+    sc = price / (nb_dis + avg_rob);
     // sc = 1 / (1 + std::exp(-sc));
-    // }
-
-    // if (whichmap == 1) {
-    //   sc = price / (nb_dis + avg_rob);
-    // } else if (whichmap == 2) {
-    //   sc = price / (nb_dis * 1.5 + avg_rob * 0.5);
-    // } else {
-      sc = price / (nb_dis + avg_rob);
     // }
 
     cargo._score = sc;
@@ -1360,8 +1355,13 @@ void initialization() {
   }
 
   berth_init();
-
   whichmap = whichMap();
+
+  if (whichmap == 3) {
+    FRAME_LAST = 2600;
+  }
+
+  // FRAME_LAST;
 
   // 船的容积,即最多能装的物品数。
   scanf("%u", &Ship::capacity);
@@ -1394,7 +1394,7 @@ uint32_t frameInput() {
     // 货物的位置坐标、金额
     scanf("%u %u %u", &x, &y, &price);
 
-    // if (price < 15)
+    // if (price < 40)
     //   price = std::log(price);
 
     if (unlikely(not Map::isConnectedToAnyBerth(x, y))) // 货物在封闭区域,忽略之
@@ -1540,20 +1540,14 @@ public:
   float getScore() const {
     const auto &ship = ships[_shipid];
     if (_bid == static_cast<uint32_t>(-1)) {
-      float cur_value = ship._values;
-
-      // if (ship._size != 0) {
-      //   cur_value = cur_value / ship._size * Ship::capacity;
-      // }
-
+      const float cur_value = ship._values;
       const auto &bert = berths[ship._berth_id];
       auto viabid = berth_govp_via[ship._berth_id];
       auto bert_time = bert._time;
       if (viabid != ship._berth_id) {
         bert_time = FRAME_SHIP_SWITH_FROM_BERTH + berths[viabid]._time;
       }
-
-      return cur_value / (bert_time);
+      return cur_value / bert_time;
       // return 0;
     }
 
@@ -1716,21 +1710,17 @@ void shipsUpdate() {
         }
         continue;
       }
-
-      uint32_t free_lowbound;
+      float free_upbound;
 
       if (whichmap == 1 or whichmap == 2) {
-        const auto tmp =
-            ship._size / (float)Ship::capacity * getRandom(50, 100);
-        free_lowbound = tmp;
+        free_upbound = std::exp((float)ship._size / (float)Ship::capacity) *
+                       getRandom(30, 60);
       } else {
-        free_lowbound = getRandom(50, 100);
+        free_upbound = getRandom(50, 100);
       }
 
-      // const uint32_t free_upbound = tmp;
-
       ship._free_frame++;
-      if (ship._free_frame > free_lowbound) {
+      if (ship._free_frame > free_upbound) {
 
         {
           for (const auto &bert : berths) {
@@ -1845,6 +1835,14 @@ void robotsUpdate() {
     }
   }
 
+  for (auto &&cargo : _tmp) {
+    const auto &c = cargos[cargo._id];
+    if (not c.isAvailable())
+      continue;
+    cargos_pq.push(std::move(cargo));
+  }
+  _tmp.clear();
+
   static std::vector<std::pair<float, uint32_t>> robots_priority;
   robots_priority.reserve(ROBOT_MAX);
   robots_priority.clear();
@@ -1916,14 +1914,6 @@ void robotsUpdate() {
     }
     // unsetAllBarriers();
   }
-
-  for (auto &&cargo : _tmp) {
-    const auto &c = cargos[cargo._id];
-    if (not c.isAvailable())
-      continue;
-    cargos_pq.push(std::move(cargo));
-  }
-  _tmp.clear();
 }
 
 void frameUpdate() {
