@@ -78,6 +78,8 @@ Direction reverse(Direction d) {
   }
 }
 
+static uint32_t isThereARobotNow(uint32_t x, uint32_t y);
+
 class TimeCounter {
 public:
   TimeCounter(const char *p) {
@@ -703,6 +705,8 @@ public:
         if (inQueue[nx][ny])
           continue;
 
+        // bool flag = isThereARobotNow(nx, ny) != -1;
+
         if (isMoveAble(nx, ny)) {
           road[nx][ny] = reverse(static_cast<Direction>(i));
           assert(road[nx][ny] != Direction::none);
@@ -711,7 +715,7 @@ public:
           inQueue[nx][ny] = true;
         } else if (to.first == nx and to.second == ny) {
           // 目标点被优先级高的机器人设为了barrier
-          if (step > 1) {
+          if (step > 2) {
             road[nx][ny] = reverse(static_cast<Direction>(i));
             pq.push({nx, ny, step + 1});
             inQueue[nx][ny] = true;
@@ -798,15 +802,6 @@ public:
   float _score;
 
   static std::array<Robot, ROBOT_MAX> robots;
-
-  static uint32_t isThereARobotNow(uint32_t x, uint32_t y) {
-    auto cnt = std::find_if(
-        begin(Robot::robots), end(Robot::robots),
-        [x, y](const Robot &r) { return r._x == x and r._y == y; });
-    if (likely(cnt == end(robots)))
-      return -1;
-    return cnt->_id;
-  }
 
   bool isWithCargo() const { return _carryStatus == CarryStatus::carrying; }
 
@@ -1117,6 +1112,15 @@ std::array<Robot, ROBOT_MAX> Robot::robots;
 std::array<std::pair<uint32_t, uint32_t>, ROBOT_MAX> Robot::next_posi;
 std::vector<uint32_t> Robot::caller_move2;
 
+static uint32_t isThereARobotNow(uint32_t x, uint32_t y) {
+  auto cnt =
+      std::find_if(begin(Robot::robots), end(Robot::robots),
+                   [x, y](const Robot &r) { return r._x == x and r._y == y; });
+  if (likely(cnt == end(Robot::robots)))
+    return -1;
+  return cnt->_id;
+}
+
 // 实际上把给货物分配港口,分配机器人的活都干了
 class CargoPqItem {
 public:
@@ -1234,12 +1238,16 @@ public:
 
     const float price = cargo._price;
     float sc;
+    constexpr float Euler = 2.718281828;
     // const float sc = price / (nb_dis + avg_rob + nb_time);
-    if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
-      sc = (std::exp(price / 200)) / (avg_rob);
-    } else {
-      sc = (std::exp(price / 200)) / (nb_dis * 0.5 + avg_rob * 1.5);
-    }
+    // if (getCurrentFrame() + FRAME_LAST >= FRAME_MAX) {
+    // sc = (std::exp(price / 200)) / (avg_rob);
+    // } else {
+    // sc = (std::exp(price / 200)) / (nb_dis + avg_rob);
+    sc = price / (nb_dis + avg_rob);
+    // sc = 1 / (1 + std::exp(-price));
+    // sc = 1 / (1 + std::exp(-sc));
+    // }
     cargo._score = sc;
     return sc;
   }
@@ -1337,6 +1345,10 @@ uint32_t frameInput() {
     uint32_t x, y, price;
     // 货物的位置坐标、金额
     scanf("%u %u %u", &x, &y, &price);
+
+    // if (price < 40)
+    //   price = std::log(price);
+
     if (unlikely(not Map::isConnectedToAnyBerth(x, y))) // 货物在封闭区域,忽略之
       continue;
 
